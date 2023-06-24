@@ -1,0 +1,2525 @@
+﻿
+// 菠萝派源码.cpp: 实现文件
+//
+
+#include "pch.h"
+#include "framework.h"
+#include "MFCApplication1.h"
+#include "MFCApplication1Dlg.h"
+#include "afxdialogex.h"
+
+const int max_face = 26;//表情包的数量
+const float init_pepper_salt_k = 4000;//设定初始值，【在用户不输入任何值的情况】下进行一个自动化填充合适值的
+const float init_pepper_salt_b = 0;
+const float init_gaosi_ε = 20;//操作。这样写便于移植。只要在if（）里面写入出了本身外所有
+const float init_gaosi_σ = 40;//其他按钮项的初始值，{ }里写入该按钮项的初始值即可
+const float init_liner_k  =1.2;//非常方便
+const float init_liner_b =-20;
+const float init_noliner_k = 1.2;
+const float init_noliner_b = 2.7;
+const float init_average_filter_k = 5;
+const float init_average_filter_b = 0;
+const float init_media_filter_k = 7;
+const float init_media_liter_b = 0;
+const float init_Canny_k = 50;
+const float init_Canny_b =200;
+const float init_role_k = 10;
+const float init_role_b = 0;
+const float init_scale_k=0.9;
+const float init_scale_b = 0.9;
+const float init_max_press = 5;
+const float init_gaosi_k = 5;
+const float init_gaosi_b = 0;
+const int music_max = 11;
+CRect rect;//获取图片控件的属性
+CString m_strFilePath;//读取图片路径
+String FilePath;
+String output="output";//用来存储右边那个的窗口名称，用来destroy特定窗口
+int num_inrtoduce;
+int num_music;
+int num_begin=0;
+int num_sobel = 0;//用来给Soble窗口创建，消除计数
+int num_Laplace = 0;
+int num_Canny = 0;
+int num_save = 0;
+int num_special = 0;
+Mat gradx, grady, absgradx, absgrady, absgradxy;//用于Soble展示窗口
+Mat  laplance_gray_gaosi_src;//用于Laplace展示窗口
+Mat Canny_edge,coloredge;//用于Canny展示窗口
+Mat copySrcImg;//用于频谱图备份
+Mat FFT_role;//用于存放旋转后的频谱图
+Mat FFT_scale;//用于存放缩放后的频谱图
+int num_role = 0;
+int num_scale = 0;						 
+//下面两个比较重要吧，写给以后看
+static Mat srcImg;//左边的
+Mat dst;//右边的
+void My_DFT(Mat input_image, Mat& output_image, Mat& transform_image)
+{
+	//1.扩展图像矩阵，为2，3，5的倍数时运算速度快
+	int m = getOptimalDFTSize(input_image.rows);
+	int n = getOptimalDFTSize(input_image.cols);
+	copyMakeBorder(input_image, input_image, 0, m - input_image.rows, 0, n - input_image.cols, BORDER_CONSTANT, Scalar::all(0));
+
+	//2.创建一个双通道矩阵planes，用来储存复数的实部与虚部
+	Mat planes[] = { Mat_<float>(input_image), Mat::zeros(input_image.size(), CV_32F) };
+
+	//3.从多个单通道数组中创建一个多通道数组:transform_image。函数Merge将几个数组合并为一个多通道阵列，即输出数组的每个元素将是输入数组元素的级联
+	merge(planes, 2, transform_image);
+
+	//4.进行傅立叶变换
+	dft(transform_image, transform_image);
+
+	//5.计算复数的幅值，保存在output_image（频谱图）
+	split(transform_image, planes); // 将双通道分为两个单通道，一个表示实部，一个表示虚部
+	Mat transform_image_real = planes[0];
+	Mat transform_image_imag = planes[1];
+
+	magnitude(planes[0], planes[1], output_image); //计算复数的幅值，保存在output_image（频谱图）
+
+	//6.前面得到的频谱图数级过大，不好显示，因此转换
+	output_image += Scalar(1);   // 取对数前将所有的像素都加1，防止log0
+	log(output_image, output_image);   // 取对数
+	normalize(output_image, output_image, 0, 1, NORM_MINMAX); //归一化
+
+	//7.剪切和重分布幅度图像限
+	output_image = output_image(Rect(0, 0, output_image.cols & -2, output_image.rows & -2));
+
+	// 重新排列傅里叶图像中的象限，使原点位于图像中心
+	int cx = output_image.cols / 2;
+	int cy = output_image.rows / 2;
+	Mat q0(output_image, Rect(0, 0, cx, cy));   // 左上区域
+	Mat q1(output_image, Rect(cx, 0, cx, cy));  // 右上区域
+	Mat q2(output_image, Rect(0, cy, cx, cy));  // 左下区域
+	Mat q3(output_image, Rect(cx, cy, cx, cy)); // 右下区域
+
+	  //交换象限中心化
+	Mat tmp;
+	q0.copyTo(tmp); q3.copyTo(q0); tmp.copyTo(q3);//左上与右下进行交换
+	q1.copyTo(tmp); q2.copyTo(q1); tmp.copyTo(q2);//右上与左下进行交换
+
+
+	Mat q00(transform_image_real, Rect(0, 0, cx, cy));   // 左上区域
+	Mat q01(transform_image_real, Rect(cx, 0, cx, cy));  // 右上区域
+	Mat q02(transform_image_real, Rect(0, cy, cx, cy));  // 左下区域
+	Mat q03(transform_image_real, Rect(cx, cy, cx, cy)); // 右下区域
+	q00.copyTo(tmp); q03.copyTo(q00); tmp.copyTo(q03);//左上与右下进行交换
+	q01.copyTo(tmp); q02.copyTo(q01); tmp.copyTo(q02);//右上与左下进行交换
+
+	Mat q10(transform_image_imag, Rect(0, 0, cx, cy));   // 左上区域
+	Mat q11(transform_image_imag, Rect(cx, 0, cx, cy));  // 右上区域
+	Mat q12(transform_image_imag, Rect(0, cy, cx, cy));  // 左下区域
+	Mat q13(transform_image_imag, Rect(cx, cy, cx, cy)); // 右下区域
+	q10.copyTo(tmp); q13.copyTo(q10); tmp.copyTo(q13);//左上与右下进行交换
+	q11.copyTo(tmp); q12.copyTo(q11); tmp.copyTo(q12);//右上与左下进行交换
+
+	planes[0] = transform_image_real;
+	planes[1] = transform_image_imag;
+	merge(planes, 2, transform_image);//将傅里叶变换结果中心化
+}
+void Rotate(const Mat& srcImage, Mat& destImage, double angle) {
+	Point2f center(srcImage.cols / 2, srcImage.rows / 2);//中心
+	Mat M = getRotationMatrix2D(center, angle, 1);//计算旋转的仿射变换矩阵
+	warpAffine(srcImage, destImage, M, Size(srcImage.cols, srcImage.rows));//仿射变换
+	circle(destImage, center, 2, Scalar(255, 0, 0));
+}
+
+//以下代码用于实现窗口内嵌在MFC内的效果
+//CWnd* pWnd1 = GetDlgItem(IDC_PIC2);//改“output” nanewindow（），什么填什么****************
+//pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+///*FilePath = CW2A(m_strFilePath)*/;//CString转换为String
+//namedWindow("output", WINDOW_AUTOSIZE);//改“output” nanewindow（），什么填什么***************
+////const char* p = FilePath.data();//String转换为Char*
+//HWND hWndl = (HWND)cvGetWindowHandle("output");//改“output” nanewindow（），什么填什么************
+//HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+//::SetParent(hWndl, GetDlgItem(IDC_PIC2)->m_hWnd);改“IDC_PIC2”绑定哪个窗口填哪个***************
+//::ShowWindow(hParent1, SW_HIDE);
+//resize(dst, dst, Size(rect.Width(), rect.Height()));
+//imshow("output", dst);//改"output", dst*****************
+
+
+#ifdef _DEBUG
+#define new DEBUG_NEW
+#endif
+
+
+// 用于应用程序“关于”菜单项的 CAboutDlg 对话框
+
+class CAboutDlg : public CDialogEx
+{
+public:
+	CAboutDlg();
+
+// 对话框数据
+#ifdef AFX_DESIGN_TIME
+	enum { IDD = IDD_ABOUTBOX };
+#endif
+
+	protected:
+	virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV 支持
+
+// 实现
+protected:
+	DECLARE_MESSAGE_MAP()
+};
+
+CAboutDlg::CAboutDlg() : CDialogEx(IDD_ABOUTBOX)
+{
+}
+
+void CAboutDlg::DoDataExchange(CDataExchange* pDX)
+{
+	CDialogEx::DoDataExchange(pDX);
+
+}
+
+BEGIN_MESSAGE_MAP(CAboutDlg, CDialogEx)
+END_MESSAGE_MAP()
+
+
+// CMFCApplication1Dlg 对话框
+
+
+
+CMFCApplication1Dlg::CMFCApplication1Dlg(CWnd* pParent /*=nullptr*/)
+	: CDialogEx(IDD_MFCAPPLICATION1_DIALOG, pParent)
+{
+	m_hIcon = AfxGetApp()->LoadIcon(IDI_ICON1);
+}
+
+void CMFCApplication1Dlg::DoDataExchange(CDataExchange* pDX)
+{
+	CDialogEx::DoDataExchange(pDX);
+	DDX_Text(pDX, IDC_EDIT1, m_strFilePath);//************在这里绑定变量与框框*************
+	DDX_Text(pDX, IDC_EDIT2,  k);
+	DDX_Text(pDX, IDC_EDIT3, b);
+	DDX_Control(pDX, IDC_STATIC1, introduce);
+	DDX_Control(pDX, IDC_STATIC2, mod);
+}
+
+BEGIN_MESSAGE_MAP(CMFCApplication1Dlg, CDialogEx)
+	ON_WM_SYSCOMMAND()
+	ON_WM_PAINT()
+	ON_WM_QUERYDRAGICON()
+	ON_BN_CLICKED(IDOK, &CMFCApplication1Dlg::OnBnClickedOk)
+	ON_BN_CLICKED(IDCANCEL, &CMFCApplication1Dlg::OnBnClickedCancel)
+	ON_BN_CLICKED(IDC_BUTTON1, &CMFCApplication1Dlg::OnBnClickedButton1)
+
+	ON_BN_CLICKED(IDC_BUTTON2, &CMFCApplication1Dlg::OnBnClickedButton2)
+	ON_BN_CLICKED(IDC_BUTTON3, &CMFCApplication1Dlg::OnBnClickedButton3)
+	ON_BN_CLICKED(IDC_BUTTON4, &CMFCApplication1Dlg::OnBnClickedButton4)
+	ON_BN_CLICKED(IDC_BUTTON5, &CMFCApplication1Dlg::OnBnClickedButton5)
+	ON_BN_CLICKED(IDC_BUTTON6, &CMFCApplication1Dlg::OnBnClickedButton6)
+	ON_BN_CLICKED(IDC_BUTTON7, &CMFCApplication1Dlg::OnBnClickedButton7)
+	ON_BN_CLICKED(IDC_BUTTON8, &CMFCApplication1Dlg::OnBnClickedButton8)
+	ON_BN_CLICKED(IDC_BUTTON9, &CMFCApplication1Dlg::OnBnClickedButton9)
+	ON_STN_CLICKED(IDC_STATIC2, &CMFCApplication1Dlg::OnStnClickedStatic2)
+	ON_BN_CLICKED(IDC_BUTTON10, &CMFCApplication1Dlg::OnBnClickedButton10)
+	//ON_BN_CLICKED(IDC_BUTTON11, &CMFCApplication1Dlg::OnBnClickedButton11)
+	//ON_BN_CLICKED(IDC_BUTTON12, &CMFCApplication1Dlg::OnBnClickedButton12)
+	ON_BN_CLICKED(IDC_BUTTON14, &CMFCApplication1Dlg::OnBnClickedButton14)
+	ON_BN_CLICKED(IDC_BUTTON15, &CMFCApplication1Dlg::OnBnClickedButton15)
+	ON_BN_CLICKED(IDC_BUTTON16, &CMFCApplication1Dlg::OnBnClickedButton16)
+	ON_BN_CLICKED(IDC_BUTTON17, &CMFCApplication1Dlg::OnBnClickedButton17)
+	ON_BN_CLICKED(IDC_BUTTON18, &CMFCApplication1Dlg::OnBnClickedButton18)
+	ON_BN_CLICKED(IDC_BUTTON20, &CMFCApplication1Dlg::OnBnClickedButton20)
+	ON_BN_CLICKED(IDC_BUTTON21, &CMFCApplication1Dlg::OnBnClickedButton21)
+	ON_BN_CLICKED(IDC_BUTTON19, &CMFCApplication1Dlg::OnBnClickedButton19)
+	ON_BN_CLICKED(IDC_BUTTON22, &CMFCApplication1Dlg::OnBnClickedButton22)
+	ON_BN_CLICKED(IDC_BUTTON23, &CMFCApplication1Dlg::OnBnClickedButton23)
+	ON_BN_CLICKED(IDC_BUTTON24, &CMFCApplication1Dlg::OnBnClickedButton24)
+	ON_BN_CLICKED(IDC_BUTTON13, &CMFCApplication1Dlg::OnBnClickedButton13)
+	ON_BN_CLICKED(IDC_BUTTON25, &CMFCApplication1Dlg::OnBnClickedButton25)
+	ON_BN_CLICKED(IDC_BUTTON29, &CMFCApplication1Dlg::OnBnClickedButton29)
+	ON_BN_CLICKED(IDC_BUTTON31, &CMFCApplication1Dlg::OnBnClickedButton31)
+	ON_BN_CLICKED(IDC_BUTTON28, &CMFCApplication1Dlg::OnBnClickedButton28)
+	ON_BN_CLICKED(IDC_BUTTON30, &CMFCApplication1Dlg::OnBnClickedButton30)
+	ON_BN_CLICKED(IDC_BUTTON27, &CMFCApplication1Dlg::OnBnClickedButton27)
+	ON_BN_CLICKED(IDC_BUTTON32, &CMFCApplication1Dlg::OnBnClickedButton32)
+	ON_STN_CLICKED(IDC_STATIC1, &CMFCApplication1Dlg::OnStnClickedStatic1)
+	ON_BN_CLICKED(IDC_BUTTON33, &CMFCApplication1Dlg::OnBnClickedButton33)
+	ON_BN_CLICKED(IDC_BUTTON26, &CMFCApplication1Dlg::OnBnClickedButton26)
+	ON_BN_CLICKED(IDC_BUTTON34, &CMFCApplication1Dlg::OnBnClickedButton34)
+	ON_BN_CLICKED(IDC_BUTTON35, &CMFCApplication1Dlg::OnBnClickedButton35)
+	ON_BN_CLICKED(IDC_BUTTON36, &CMFCApplication1Dlg::OnBnClickedButton36)
+	ON_BN_CLICKED(IDC_BUTTON37, &CMFCApplication1Dlg::OnBnClickedButton37)
+	ON_BN_CLICKED(IDC_BUTTON38, &CMFCApplication1Dlg::OnBnClickedButton38)
+	ON_BN_CLICKED(IDC_BUTTON39, &CMFCApplication1Dlg::OnBnClickedButton39)
+	ON_BN_CLICKED(IDC_BUTTON41, &CMFCApplication1Dlg::OnBnClickedButton41)
+	ON_BN_CLICKED(IDC_BUTTON42, &CMFCApplication1Dlg::OnBnClickedButton42)
+END_MESSAGE_MAP()
+
+
+// CMFCApplication1Dlg 消息处理程序
+
+BOOL CMFCApplication1Dlg::OnInitDialog()
+{
+	CDialogEx::OnInitDialog();
+
+	// 将“关于...”菜单项添加到系统菜单中。
+
+	// IDM_ABOUTBOX 必须在系统命令范围内。
+	ASSERT((IDM_ABOUTBOX & 0xFFF0) == IDM_ABOUTBOX);
+	ASSERT(IDM_ABOUTBOX < 0xF000);
+
+	CMenu* pSysMenu = GetSystemMenu(FALSE);
+	if (pSysMenu != nullptr)
+	{
+		BOOL bNameValid;
+		CString strAboutMenu;
+		bNameValid = strAboutMenu.LoadString(IDS_ABOUTBOX);
+		ASSERT(bNameValid);
+		if (!strAboutMenu.IsEmpty())
+		{
+			pSysMenu->AppendMenu(MF_SEPARATOR);
+			pSysMenu->AppendMenu(MF_STRING, IDM_ABOUTBOX, strAboutMenu);
+		}
+	}
+
+
+	//----------------------------【自定义代码处】--------------------------------------
+
+	// 设置此对话框的图标。  当应用程序主窗口不是对话框时，框架将自动
+	//  执行此操作
+	SetIcon(m_hIcon, 1);			// 设置大图标
+	SetIcon(m_hIcon, 0);		// 设置小图标
+
+	// TODO: 在此添加额外的初始化代码
+
+	return TRUE;  // 除非将焦点设置到控件，否则返回 TRUE
+}
+void CMFCApplication1Dlg::OnStnClickedStatic1()
+{
+	// TODO: 在此添加控件通知处理程序代码
+}
+void CMFCApplication1Dlg::OnSysCommand(UINT nID, LPARAM lParam)
+{
+	if ((nID & 0xFFF0) == IDM_ABOUTBOX)
+	{
+		CAboutDlg dlgAbout;
+		dlgAbout.DoModal();
+	}
+	else
+	{
+		CDialogEx::OnSysCommand(nID, lParam);
+	}
+}
+
+// 如果向对话框添加最小化按钮，则需要下面的代码
+//  来绘制该图标。  对于使用文档/视图模型的 MFC 应用程序，
+//  这将由框架自动完成。
+
+void CMFCApplication1Dlg::OnPaint()//在这里设置开屏动画
+{
+	if (num_begin == 0)
+	{	
+		//读写数据
+		//Mat begin = imread("ImgLoad/begin.png");+
+		//namedWindow("Welcom!  按任意键继续！",0);
+		//resizeWindow("Welcom!  按任意键继续！", 1300,850 );
+		//moveWindow("Welcom!  按任意键继续！", 300, 100);
+		//imshow("Welcom!  按任意键继续！", begin);
+		//waitKey(0);//什么玄学？？？waitkey(0)不行，10,100,1000就行....
+		//destroyAllWindows();
+		//num_begin++;
+	}
+	if (IsIconic())
+	{		
+		CPaintDC dc(this); // 用于绘制的设备上下文
+
+		SendMessage(WM_ICONERASEBKGND, reinterpret_cast<WPARAM>(dc.GetSafeHdc()), 0);
+
+		// 使图标在工作区矩形中居中
+		int cxIcon = GetSystemMetrics(SM_CXICON);
+		int cyIcon = GetSystemMetrics(SM_CYICON);
+		CRect rect;
+		GetClientRect(&rect);
+		int x = (rect.Width() - cxIcon + 1) / 2;
+		int y = (rect.Height() - cyIcon + 1) / 2;
+
+		// 绘制图标
+		dc.DrawIcon(x, y, m_hIcon);
+	}
+	else
+	{
+		/*CDialogEx::OnPaint();*/
+		CPaintDC   dc(this);
+		CRect   rect;
+		GetClientRect(&rect);                                 //获取对话框长宽       
+		CDC   dcBmp;                                           //定义并创建一个内存设备环境
+		dcBmp.CreateCompatibleDC(&dc);                         //创建兼容性DC
+		CBitmap   bmpBackground;
+		bmpBackground.LoadBitmap(IDB_BITMAP1);                 //载入资源中的IDB_BITMAP1图片
+		BITMAP   m_bitmap;                                     //图片变量                
+		bmpBackground.GetBitmap(&m_bitmap);                    //将图片载入位图中
+		CBitmap* pbmpOld = dcBmp.SelectObject(&bmpBackground); //将位图选入临时内存设备环境  
+		//调用函数显示图片 StretchBlt显示形状可变
+		dc.StretchBlt(0, 0, rect.Width(), rect.Height(), &dcBmp, 0, 0,
+			m_bitmap.bmWidth, m_bitmap.bmHeight, SRCCOPY);
+
+		/******************************************************/
+		/** StretchBlt()                                     **/
+		/** 参数x、y位图目标矩形左上角x、y的坐标值 居中      **/
+		/** nWidth、nHeigth位图目标矩形的逻辑宽度和高度      **/
+		/** pSrcDC表示源设备CDC指针                          **/
+		/** xSrc、ySrc表示位图源矩形的左上角的x、y逻辑坐标值 **/
+		/** dwRop表示显示位图的光栅操作方式                  **/
+		/** SRCCOPY用于直接将位图复制到目标环境中            **/
+		/******************************************************/
+
+	}
+}
+
+//当用户拖动最小化窗口时系统调用此函数取得光标
+//显示。
+HCURSOR CMFCApplication1Dlg::OnQueryDragIcon()
+{
+	return static_cast<HCURSOR>(m_hIcon);
+}
+
+
+void CMFCApplication1Dlg::OnBnClickedOk()
+{
+	// TODO: 在此添加控件通知处理程序代码
+	//CDialogEx::OnOK();//这行注释掉，在编辑框按ENTER就不会退出了
+}
+void CMFCApplication1Dlg::OnBnClickedCancel()
+{
+	// TODO: 在此添加控件通知处理程序代码
+	CDialogEx::OnCancel();
+}
+void CMFCApplication1Dlg::OnEnChangeEdit1()
+{
+	// TODO:  如果该控件是 RICHEDIT 控件，它将不
+	// 发送此通知，除非重写 CDialogEx::OnInitDialog()
+	// 函数并调用 CRichEditCtrl().SetEventMask()，
+	// 同时将 ENM_CHANGE 标志“或”运算到掩码中。
+
+	// TODO:  在此添加控件通知处理程序代码
+}
+void CMFCApplication1Dlg::OnEnChangeEdit2()
+{
+	// TODO:  如果该控件是 RICHEDIT 控件，它将不
+	// 发送此通知，除非重写 CDialogEx::OnInitDialog()
+	// 函数并调用 CRichEditCtrl().SetEventMask()，
+	// 同时将 ENM_CHANGE 标志“或”运算到掩码中。
+
+	// TODO:  在此添加控件通知处理程序代码
+}
+
+
+
+//读取图像路径
+void CMFCApplication1Dlg::OnBnClickedButton1()
+{
+UpdateData(TRUE);
+PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+	SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!FilePath.empty())//主要用于Clear后再点这个能显示原来的图片，人机交互嘛  empty是第一次读取的时候不用这个
+ //666 自学成才 empty。但是跟clear中的 destryoallwindows有冲突.....嗯，好了，吧filepath写""就好了
+//额，下面注释了那么多是为了获取窗口句柄的，但不知道为什么会出bug：连续获取两次路径窗口会不见，写这么点反而好了.....
+	{
+	//	//CWnd* pWnd1 = GetDlgItem(IDC_PIC);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+	//	//pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+	//	//FilePath = CW2A(m_strFilePath);//CString转换为String
+	//	//namedWindow(FilePath, WINDOW_AUTOSIZE);//设置窗口名
+	//	//const char* p = FilePath.data();//String转换为Char*
+	//	//HWND hWndl = (HWND)cvGetWindowHandle(p);//hWnd 表示窗口句柄,获取窗口句柄
+	//	//HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+	//	//::SetParent(hWndl, GetDlgItem(IDC_PIC)->m_hWnd);
+	//	//::ShowWindow(hParent1, SW_HIDE);
+
+	//	srcImg = imread(FilePath);//重要！！！！
+
+	//	//resize(srcImg, srcImg, Size(rect.Width(), rect.Height()));
+	//
+		imshow(FilePath, srcImg);
+		destroyWindow(FilePath);//哈哈哈，还是被上面那个取代了，主要是会clear清成透明了！		
+	}
+
+	     m_strFilePath = _T("");
+   //获取文件路径名
+		LPCTSTR szFilter = _T("所有文件，但不要打开奇奇怪怪的文件啊喂！(*.*)|*.*|png图像(*.png)|*.png|jpg图像(*.jpg)|*.jpg|bmp图像(*.bmp)|*.bmp|jpg图像(*.jpg)|*.jpg|jpeg图像(*.jpeg)|*.jpeg|jfif图像(*.jfif)|*.jfif||");
+	    CFileDialog dlgFileOpenImg(TRUE, NULL, NULL, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT, szFilter, NULL);
+	   //打开txt文件
+		 if (dlgFileOpenImg.DoModal() == IDOK)
+		     {
+		        //读取文件名
+			        m_strFilePath = dlgFileOpenImg.GetPathName();
+		     }
+	    else
+		   {
+		        return;
+		    }
+
+ //【自定义代码处】--//估计是只要绑定一次就行了,,,,以后这个Pictureu就和那个ID的窗口绑定了
+ CWnd* pWnd1 = GetDlgItem(IDC_PIC);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+ pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+FilePath = CW2A(m_strFilePath);//CString转换为String
+namedWindow(FilePath, WINDOW_AUTOSIZE);//设置窗口名
+const char* p = FilePath.data();//String转换为Char*
+ HWND hWndl = (HWND)cvGetWindowHandle(p);//hWnd 表示窗口句柄,获取窗口句柄
+ HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+ ::SetParent(hWndl, GetDlgItem(IDC_PIC)->m_hWnd);
+ ::ShowWindow(hParent1, SW_HIDE);
+                      
+srcImg = imread(FilePath);//重要！！！！
+
+resize(srcImg, srcImg, Size(rect.Width(), rect.Height()));
+imshow(FilePath, srcImg);
+PlaySound(MAKEINTRESOURCE(IDR_WAVE18), AfxGetResourceHandle(),
+	SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	// TODO: 在此添加控件通知处理程序代码
+   UpdateData(FALSE);
+}
+//线性变换
+void CMFCApplication1Dlg::OnBnClickedButton2()
+{
+UpdateData(1);
+PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+	SND_ASYNC | SND_RESOURCE | SND_NODEFAULT );//单次环播放
+if (!srcImg.empty())
+{
+	
+	if ((k == init_gaosi_ε && b == init_gaosi_σ) || (k == init_liner_k && b == init_liner_b)
+		|| (k == init_noliner_k && b == init_noliner_b) || (k == init_average_filter_k && b == init_average_filter_b) ||
+		(k == init_media_filter_k && b == init_media_liter_b) || (k == init_pepper_salt_k && b == init_pepper_salt_b)
+		|| (k == init_Canny_k && b == init_Canny_b) || (k == init_role_k && b == init_role_b)
+		|| (k == init_scale_k && b == init_scale_b) || (k == init_gaosi_k && b == init_gaosi_b))
+	{
+		k = init_liner_k;
+		b = init_liner_b;
+	}
+	if (k != init_liner_k||b!=init_liner_b)//把这句话放下面，而不是上面，秀！
+	{
+		mod.SetWindowTextW(L"手动模式");
+	}
+	else
+		mod.SetWindowTextW(L"自动模式");
+
+	namedWindow(output);
+	destroyWindow(output);
+	/*tuition.SetWindowTextW(L" 右边图像=左边图像*k+b\n k>1,会发现“对比度”变大了/同时也变亮了\n k<1，会发现“对比度”变小了/同时也变暗了\n 至于b，是用来增暗或提亮度的，用来控制过曝和死黑现象 ");*/
+	dst = srcImg * k + b;
+	//----------------------------【自定义代码处】--------------------------------------
+	CWnd* pWnd1 = GetDlgItem(IDC_PIC2);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+	pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+	/*FilePath = CW2A(m_strFilePath)*/;//CString转换为String
+	namedWindow(output, WINDOW_AUTOSIZE);//设置窗口名
+	//const char* p = FilePath.data();//String转换为Char*
+	HWND hWndl = (HWND)cvGetWindowHandle("output");//hWnd 表示窗口句柄,获取窗口句柄
+	HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+	::SetParent(hWndl, GetDlgItem(IDC_PIC2)->m_hWnd);
+	::ShowWindow(hParent1, SW_HIDE);
+	resize(dst, dst, Size(rect.Width(), rect.Height()));
+	imshow(output, dst);
+}
+UpdateData(0);
+}
+//非线性变换
+void CMFCApplication1Dlg::OnBnClickedButton3()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!srcImg.empty())
+	{
+		if ((k == init_gaosi_ε && b == init_gaosi_σ) || (k == init_liner_k && b == init_liner_b)
+			|| (k == init_noliner_k && b == init_noliner_b) || (k == init_average_filter_k && b == init_average_filter_b) ||
+			(k == init_media_filter_k && b == init_media_liter_b) || (k == init_pepper_salt_k && b == init_pepper_salt_b)
+			|| (k == init_Canny_k && b == init_Canny_b) || (k == init_role_k && b == init_role_b)
+			|| (k == init_scale_k && b == init_scale_b) || (k == init_gaosi_k && b == init_gaosi_b))
+		{
+			k = init_noliner_k;
+			b = init_noliner_b;
+		}
+		if (k !=init_noliner_k)//把这句话放下面，而不是上面，秀！
+		{
+			mod.SetWindowTextW(L"手动模式");
+		}
+		else
+			mod.SetWindowTextW(L"自动模式");
+		output = "output";
+		namedWindow(output);
+		destroyWindow(output);
+		/*tuition.SetWindowTextW(L" 所谓非线性变化，就是不是线性变化的变化,\n 进一步：不是形如y = kx + b的变换, \n 像什么Log，x^n，便是非线性变化的面纱!\n 这里便是用到的s=cr^k这个变换\n 你问有什么用？你问的太多了！");*/
+	/*	Mat src = srcImg;*/
+		int nr = srcImg.rows;
+		int nc = srcImg.cols * srcImg.channels();
+		/*dst(src.size(), src.type(), Scalar::all(0))*/;//之前定义的全局变量
+		srcImg.copyTo(dst);
+		dst.convertTo(dst, CV_64F);
+		if (srcImg.isContinuous() && dst.isContinuous()) {  //判断图像连续性
+			nr = 1;
+			nc = srcImg.rows * srcImg.cols * srcImg.channels(); //行数*列数 * 通道数= 一维数组的个数
+		}
+
+		for (int i = 0; i < nr; i++) {
+			const uchar* srcdata = srcImg.ptr <uchar>(i);  //采用指针访问像素，获取第i行的首地址
+			double* dstdata = dst.ptr <double>(i);
+			for (int j = 0; j < nc; j++) {
+				dstdata[j] = k *( log(double(1.0 + srcdata[j]))/log(b)); //开始处理每个像素
+				//dstdata[j] = (log(double(1.0 + srcdata[j])) / log(b)); //开始处理每个像素
+				//dstdata[j] = log(double(1.0 + srcdata[j])); //开始处理每个像素
+			}
+		}
+		normalize(dst, dst, 0, 255, NORM_MINMAX); //经过对比拉升（将像素值归一化到0-255）得到最终的图像
+		dst.convertTo(dst, CV_8U);  //转回无符号8位图像
+		 //----------------------------【自定义代码处】--------------------------------------
+		CWnd* pWnd1 = GetDlgItem(IDC_PIC2);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+		pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+		/*FilePath = CW2A(m_strFilePath)*/;//CString转换为String
+		namedWindow(output, WINDOW_AUTOSIZE);//设置窗口名
+		//const char* p = FilePath.data();//String转换为Char*
+		HWND hWndl = (HWND)cvGetWindowHandle("output");//hWnd 表示窗口句柄,获取窗口句柄
+		HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+		::SetParent(hWndl, GetDlgItem(IDC_PIC2)->m_hWnd);
+		::ShowWindow(hParent1, SW_HIDE);
+		resize(dst, dst, Size(rect.Width(), rect.Height()));
+		imshow(output, dst);
+	}
+	// TODO: 在此添加控件通知处理程序代码
+	UpdateData(0);
+}
+//变换前的直方图
+void CMFCApplication1Dlg::OnBnClickedButton4()
+{
+UpdateData(1);
+PlaySound(MAKEINTRESOURCE(IDR_WAVE19), AfxGetResourceHandle(),
+	SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+if (!srcImg.empty())
+{	
+	namedWindow("变换前彩色图の直方图");
+	namedWindow("变换前灰度图の直方图");
+	destroyWindow("变换前彩色图の直方图");
+	destroyWindow("变换前灰度图の直方图");
+	Mat src = srcImg;
+	if (src.type() == CV_8UC1)
+	{
+		Mat gray = src;//便于移植罢了，下面都是用gray写的，写一句不用调多了。
+		const int channels[] = { 0 };
+		Mat hist;//定义输出Mat类型
+		int dims = 1;//设置直方图维度
+		const int histSize[] = { 256 }; //直方图每一个维度划分的柱条的数目
+		//每一个维度取值范围
+		float pranges[] = { 0, 255 };//取值区间
+		const float* ranges[] = { pranges };
+
+		calcHist(&gray, 1, channels, Mat(), hist, dims, histSize, ranges, true, false);//计算直方图
+
+		int hist_w = 500;
+		int hist_h = 300;
+		int nHistSize = 256;
+		int bin_w = cvRound((double)hist_w / nHistSize);	//区间
+		Mat histImage(hist_h, hist_w, CV_8UC3, Scalar(0, 0, 0));//创建一个黑底的8位的3通道图像，高300，宽500
+		normalize(hist, hist, 0, histImage.rows, NORM_MINMAX, -1, Mat());//将直方图归一化到[0,histImage.rows]
+		for (int i = 1; i < nHistSize; i++)
+		{
+			line(histImage, Point(bin_w * (i - 1), hist_h - cvRound(hist.at<float>(i - 1))), Point(bin_w * (i), hist_h - cvRound(hist.at<float>(i))), Scalar(255, 0, 0));
+		}
+		namedWindow("变换前灰度图の直方图");
+		moveWindow("变换前灰度图の直方图", 50, 0);
+		/*HWND hwnd = (HWND)cvGetWindowHandle("变换前灰度图の直方图");*///*******用于置顶，但失败了...******
+		HWND hwnd = ::GetForegroundWindow();
+		::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);//6666666666666666666加个：：就好了，不然打开的是afdx.h这个diao毛头文件
+		imshow("变换前灰度图の直方图", histImage);
+	}
+	else if (src.type() == CV_8UC3)
+	{
+		vector<Mat>bgr_planes;
+		split(src, bgr_planes);
+
+		int histSize = 256;
+		float range[] = { 0,255 };
+		const float* Ranges = { range };
+		Mat b_hist, g_hist, r_hist;
+		calcHist(&bgr_planes[0], 1, 0, Mat(), b_hist, 1, &histSize, &Ranges, true, false);
+		calcHist(&bgr_planes[1], 1, 0, Mat(), g_hist, 1, &histSize, &Ranges, true, false);
+		calcHist(&bgr_planes[2], 1, 0, Mat(), r_hist, 1, &histSize, &Ranges, true, false);
+
+		//归一化
+		int hist_w = 500;//直方图的图像的宽
+		int hist_h = 300; //直方图的图像的高
+		int nHistSize = 256;
+		int bin_w = cvRound((double)hist_w / nHistSize);	//区间
+		Mat histImage(hist_h, hist_w, CV_8UC3, Scalar(0, 0, 0));//绘制直方图显示的图像
+		normalize(b_hist, b_hist, 0, histImage.rows, NORM_MINMAX, -1, Mat());//归一化
+		normalize(g_hist, g_hist, 0, histImage.rows, NORM_MINMAX, -1, Mat());
+		normalize(r_hist, r_hist, 0, histImage.rows, NORM_MINMAX, -1, Mat());
+		for (int i = 1; i < nHistSize; i++)
+		{
+			//绘制蓝色分量直方图
+			line(histImage, Point((i - 1) * bin_w, hist_h - cvRound(b_hist.at<float>(i - 1))),
+				Point((i)*bin_w, hist_h - cvRound(b_hist.at<float>(i))), Scalar(255, 0, 0), 2);
+			//绘制绿色分量直方图
+			line(histImage, Point((i - 1) * bin_w, hist_h - cvRound(g_hist.at<float>(i - 1))),
+				Point((i)*bin_w, hist_h - cvRound(g_hist.at<float>(i))), Scalar(0, 255, 0), 2);
+			//绘制红色分量直方图
+			line(histImage, Point((i - 1) * bin_w, hist_h - cvRound(r_hist.at<float>(i - 1))),
+				Point((i)*bin_w, hist_h - cvRound(r_hist.at<float>(i))), Scalar(0, 0, 255), 2);
+		}
+		namedWindow("变换前彩色图の直方图");
+		moveWindow("变换前彩色图の直方图", 50, 0);
+		HWND hwnd = ::GetForegroundWindow();//*******用于置顶，但失败了...******66666 我太爱:::::::::::::::::::::楽！！
+		::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);//6666666666666666666加个：：就好了，不然
+		imshow("变换前彩色图の直方图", histImage);
+	}
+}
+UpdateData(0);
+}
+//变换后的直方图
+void CMFCApplication1Dlg::OnBnClickedButton5()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE19), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!dst.empty())
+	{
+		namedWindow("变换后彩色图の直方图");//因为要显示两个窗口，所以这么操作，别的应该不用吧
+		namedWindow("变换后灰度图の直方图");
+		destroyWindow("变换后彩色图の直方图");
+		destroyWindow("变换后灰度图の直方图");
+		Mat src = dst;//这个 蛮重要但比较简单的，dst右边的，src单纯因为抄的代码用src当输入。!!!!
+		if (src.type() == CV_8UC1)//灰度图像
+		{
+			Mat gray = src;//便于移植罢了，下面都是用gray写的，写一句不用调多了。
+			const int channels[] = { 0 };
+			Mat hist;//定义输出Mat类型
+			int dims = 1;//设置直方图维度
+			const int histSize[] = { 256 }; //直方图每一个维度划分的柱条的数目
+			//每一个维度取值范围
+			float pranges[] = { 0, 255 };//取值区间
+			const float* ranges[] = { pranges };
+
+			calcHist(&gray, 1, channels, Mat(), hist, dims, histSize, ranges, true, false);//计算直方图
+
+			int hist_w = 500;
+			int hist_h = 300;
+			int nHistSize = 256;
+			int bin_w = cvRound((double)hist_w / nHistSize);	//区间
+			Mat histImage(hist_h, hist_w, CV_8UC3, Scalar(0, 0, 0));//创建一个黑底的8位的3通道图像，高300，宽500
+			normalize(hist, hist, 0, histImage.rows, NORM_MINMAX, -1, Mat());//将直方图归一化到[0,histImage.rows]
+			for (int i = 1; i < nHistSize; i++)
+			{
+				line(histImage, Point(bin_w * (i - 1), hist_h - cvRound(hist.at<float>(i - 1))), Point(bin_w * (i), hist_h - cvRound(hist.at<float>(i))), Scalar(255, 0, 0));
+			}
+			namedWindow("变换后灰度图の直方图");
+			HWND hwnd = ::GetForegroundWindow();
+			::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);//6666666666666666666加个：：就好了，不然
+			moveWindow("变换后灰度图の直方图", 50, 350);
+			imshow("变换后灰度图の直方图", histImage);
+		}
+		else if (src.type() == CV_8UC3)//彩色图像
+		{
+			vector<Mat>bgr_plane;//改了一下名字 出BUG了 去了s
+			split(src, bgr_plane);
+
+			int histSize = 256;
+			float range[] = { 0,255 };
+			const float* Ranges = { range };
+			Mat b_hist, g_hist, r_hist;
+			calcHist(&bgr_plane[0], 1, 0, Mat(), b_hist, 1, &histSize, &Ranges, true, false);
+			calcHist(&bgr_plane[1], 1, 0, Mat(), g_hist, 1, &histSize, &Ranges, true, false);
+			calcHist(&bgr_plane[2], 1, 0, Mat(), r_hist, 1, &histSize, &Ranges, true, false);
+
+			//归一化
+			int hist_w = 500;//直方图的图像的宽
+			int hist_h = 300; //直方图的图像的高
+			int nHistSize = 256;
+			int bin_w = cvRound((double)hist_w / nHistSize);	//区间
+			Mat histImage(hist_h, hist_w, CV_8UC3, Scalar(0, 0, 0));//绘制直方图显示的图像
+			normalize(b_hist, b_hist, 0, histImage.rows, NORM_MINMAX, -1, Mat());//归一化
+			normalize(g_hist, g_hist, 0, histImage.rows, NORM_MINMAX, -1, Mat());
+			normalize(r_hist, r_hist, 0, histImage.rows, NORM_MINMAX, -1, Mat());
+			for (int i = 1; i < nHistSize; i++)
+			{
+				//绘制蓝色分量直方图
+				line(histImage, Point((i - 1) * bin_w, hist_h - cvRound(b_hist.at<float>(i - 1))),
+					Point((i)*bin_w, hist_h - cvRound(b_hist.at<float>(i))), Scalar(255, 0, 0), 2);
+				//绘制绿色分量直方图
+				line(histImage, Point((i - 1) * bin_w, hist_h - cvRound(g_hist.at<float>(i - 1))),
+					Point((i)*bin_w, hist_h - cvRound(g_hist.at<float>(i))), Scalar(0, 255, 0), 2);
+				//绘制红色分量直方图
+				line(histImage, Point((i - 1) * bin_w, hist_h - cvRound(r_hist.at<float>(i - 1))),
+					Point((i)*bin_w, hist_h - cvRound(r_hist.at<float>(i))), Scalar(0, 0, 255), 2);
+			}
+			namedWindow("变换后彩色图の直方图");
+			HWND hwnd = ::GetForegroundWindow();
+			::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);//6666666666666666666加个：：就好了，不然
+			moveWindow("变换后彩色图の直方图", 50, 350);
+			imshow("变换后彩色图の直方图", histImage);
+		}
+
+	}
+	
+	UpdateData(0);
+}
+//直方图均衡化
+void CMFCApplication1Dlg::OnBnClickedButton6()
+{
+UpdateData(1);
+PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+	SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+if (!srcImg.empty())
+{
+	if (k > 1000)
+		k = 1.2;
+	/*tuition.SetWindowTextW(L" 所谓均衡化就是把直方图上比较窄的『尖尖拉宽』,\n 这里推荐先把两个直方图点出来用于做对比，\n 可以看到直方图均衡化后图像整体变宽了，\n 如果你能理解这是对图像进行『局部对比度加大』，本质也就是上面两个按钮的操作，那就不难理解直方图均衡化了。");*/
+	output = "output";
+	namedWindow(output);
+	destroyWindow(output);
+
+	if( srcImg.type() == CV_8UC1)
+	{
+		equalizeHist(srcImg, dst);
+
+		//----------------------------【自定义代码处】--------------------------------------
+		CWnd* pWnd1 = GetDlgItem(IDC_PIC2);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+		pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+		/*FilePath = CW2A(m_strFilePath)*/;//CString转换为String
+		namedWindow("output", WINDOW_AUTOSIZE);//设置窗口名
+		//const char* p = FilePath.data();//String转换为Char*
+		HWND hWndl = (HWND)cvGetWindowHandle("output");//hWnd 表示窗口句柄,获取窗口句柄
+		HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+		::SetParent(hWndl, GetDlgItem(IDC_PIC2)->m_hWnd);
+		::ShowWindow(hParent1, SW_HIDE);
+		resize(dst, dst, Size(rect.Width(), rect.Height()));
+		imshow("output", dst);
+	}
+	else if (srcImg.type() == CV_8UC3)
+	{
+		// 分割通道
+		vector<Mat>channels;
+		split(srcImg, channels);
+		Mat blue, green, red;
+		blue = channels.at(0);
+		green = channels.at(1);
+		red = channels.at(2);
+		// 分别对BGR通道做直方图均衡化
+		equalizeHist(blue, blue);
+		equalizeHist(green, green);
+		equalizeHist(red, red);
+		// 合并通道
+		merge(channels, dst);
+		//----------------------------【自定义代码处】--------------------------------------
+		CWnd* pWnd1 = GetDlgItem(IDC_PIC2);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+		pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+		/*FilePath = CW2A(m_strFilePath)*/;//CString转换为String
+		namedWindow("output", WINDOW_AUTOSIZE);//设置窗口名
+		//const char* p = FilePath.data();//String转换为Char*
+		HWND hWndl = (HWND)cvGetWindowHandle("output");//hWnd 表示窗口句柄,获取窗口句柄
+		HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+		::SetParent(hWndl, GetDlgItem(IDC_PIC2)->m_hWnd);
+		::ShowWindow(hParent1, SW_HIDE);
+		resize(dst, dst, Size(rect.Width(), rect.Height()));
+		imshow("output", dst);
+	}
+}
+UpdateData(0);
+}
+//灰度图像和原图的切换
+void CMFCApplication1Dlg::OnBnClickedButton7()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE19), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+if (!srcImg.empty())
+	{if (srcImg.type() == CV_8UC1)
+		{
+		destroyAllWindows();
+		HWND hwnd = ::GetForegroundWindow();
+		::SetWindowPos(hwnd, HWND_TOP, 1000, 1000, 0, 0, SWP_NOSIZE);//怎么说呢，destroy掉窗口但是picture control控件不清除
+		::SetWindowPos(hwnd, HWND_TOP, 56, 63, 0, 0, SWP_NOSIZE); 
+		srcImg = imread(FilePath);         //重要！！！！
+		//----------------------------【自定义代码处】--------------------------------------
+		CWnd* pWnd1 = GetDlgItem(IDC_PIC);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+		pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+		FilePath = CW2A(m_strFilePath);//CString转换为String
+		namedWindow(FilePath, WINDOW_AUTOSIZE);//设置窗口名
+		const char* p = FilePath.data();//String转换为Char*
+		HWND hWndl = (HWND)cvGetWindowHandle(p);//hWnd 表示窗口句柄,获取窗口句柄
+		HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+		::SetParent(hWndl, GetDlgItem(IDC_PIC)->m_hWnd);
+		::ShowWindow(hParent1, SW_HIDE);
+		resize(srcImg, srcImg, Size(rect.Width(), rect.Height()));
+		imshow(FilePath, srcImg);
+		}
+	else if (srcImg.type() == CV_8UC3)
+		{
+		destroyAllWindows();
+		destroyAllWindows();
+		HWND hwnd = ::GetForegroundWindow();
+		::SetWindowPos(hwnd, HWND_TOP, 1000, 1000, 0, 0, SWP_NOSIZE);//怎么说呢，destroy掉窗口但是picture control控件不清除
+		::SetWindowPos(hwnd, HWND_TOP, 56, 63, 0, 0, SWP_NOSIZE);
+		srcImg = imread(FilePath, IMREAD_GRAYSCALE);         //重要！！！！
+		//----------------------------【自定义代码处】--------------------------------------
+		CWnd* pWnd1 = GetDlgItem(IDC_PIC);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+		pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+		FilePath = CW2A(m_strFilePath);//CString转换为String
+		namedWindow(FilePath, WINDOW_AUTOSIZE);//设置窗口名
+		const char* p = FilePath.data();//String转换为Char*
+		HWND hWndl = (HWND)cvGetWindowHandle(p);//hWnd 表示窗口句柄,获取窗口句柄
+		HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+		::SetParent(hWndl, GetDlgItem(IDC_PIC)->m_hWnd);
+		::ShowWindow(hParent1, SW_HIDE);
+		resize(srcImg, srcImg, Size(rect.Width(), rect.Height()));
+		imshow(FilePath, srcImg);
+		}
+	}
+	UpdateData(0);
+}
+//动图按钮
+void CMFCApplication1Dlg::OnBnClickedButton8()
+{
+	UpdateData(1);
+	//mciSendString(_T("open dadada~.wav alias da"), NULL, 0, NULL);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	//PlaySound(MAKEINTRESOURCE(IDR_WAVE1), AfxGetResourceHandle(),
+	//SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次播放
+	namedWindow("face");
+	destroyWindow("face");
+	srand((unsigned)time(0));
+	int num=rand()%(max_face+1);
+	Mat face;
+	//----------------------------【自定义代码处】--------------------------------------
+	CWnd* pWnd1 = GetDlgItem(IDC_PID3);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+	pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+	namedWindow("face", WINDOW_AUTOSIZE);//设置窗口名
+	HWND hWndl = (HWND)cvGetWindowHandle("face");//hWnd 表示窗口句柄,获取窗口句柄
+	HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+	::SetParent(hWndl, GetDlgItem(IDC_PID3)->m_hWnd);
+	::ShowWindow(hParent1, SW_HIDE);
+	face = imread("ImgLoad/表情包/" + to_string(num) + ".jpg");//秀儿
+	resize(face, face, Size(rect.Width(), rect.Height()));
+	imshow("face", face);
+	if (num == max_face)
+	{
+		Mat Face;
+		PlaySound(MAKEINTRESOURCE(IDR_WAVE18), AfxGetResourceHandle(),
+			SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+		Face = imread("ImgLoad/表情包/" + to_string(num) + ".jpg");//秀儿
+		imshow("关注我B站！", Face);
+	}
+	UpdateData(0);
+}
+//萌新使用指南
+void CMFCApplication1Dlg::OnBnClickedButton9()
+{
+	UpdateData(1);
+	if (num_special == 0)
+	{
+		PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+			SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	}
+	else
+	{
+		PlaySound(MAKEINTRESOURCE(IDR_WAVE19), AfxGetResourceHandle(),
+			SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	}
+	num_inrtoduce++;
+	if (num_special == 0)
+	{
+		switch (num_inrtoduce)
+		{
+		case 1:
+			introduce.SetWindowTextW(L"左上角可以装载图片\n初始图片默认存放在\nImgLoad文件夹");
+			break;
+		case 2:
+			introduce.SetWindowTextW(L"保存的图片默认存放在\nImgSave文件夹\n请不要更改文件夹名\n每次保存会从'1'开始命名");
+			break;
+		case 3:
+			introduce.SetWindowTextW(L"线性变换的参数符合\ny=kx+b\nLog变换参数符合\ny=k *( log(1+x)/log(b))");
+			break;
+		case 4:
+			introduce.SetWindowTextW(L"啥啥滤波参数k\n指的是卷积核大小：k*k\n");
+			break;
+		case 5:
+			introduce.SetWindowTextW(L"Canny边缘检测\nk和b是它的两个阈值\n较大值是上阈值，\n较小值是下阈值");
+			break;
+		case 6:
+			introduce.SetWindowTextW(L"遇到BUG请联系管理员\nQQ:2062765259\n不认识我的小伙伴\n记得备注");
+			break;
+		case 7:
+			introduce.SetWindowTextW(L"啊，对了，如果使用'融合\n曝光'或者'找不同'\n出了Bug,emmm\n这部分Bug懒得修了(蔡)");
+			break;
+		default:
+			introduce.SetWindowTextW(L"已经看完咯，\n再点击就从头开始介绍了哦");
+			num_inrtoduce = 0;
+			break;
+		}
+	}
+	else
+	{
+		switch (num_inrtoduce)
+		{
+		case 1:
+			introduce.SetWindowTextW(L"二阶拉普拉斯变换的按钮，\n因为打Laplance会换行，\n不美观，\n所以打了Laplace");
+			break;
+		case 2:
+			introduce.SetWindowTextW(L"你知道吗？\nEXchange其实需要一行\n代码便可以实现！");
+			break;
+		case 3:
+			introduce.SetWindowTextW(L"你知道吗？\n垃圾—就要丢进\n辣鸡桶~里面！");
+			break;
+		case 4:
+			introduce.SetWindowTextW(L"该程序预设了一个自动模式,\n它会自动给你的下一个\n操作一个较合理的值。\n(指用jio填的");
+			break;
+		case 5:
+			introduce.SetWindowTextW(L"如果你不小心退出了自动\n模式，进入了手动模式，\n或许有什么办法再次\n回到自动模式?");
+			break;
+		case 6:
+			introduce.SetWindowTextW(L"当我写这份代码时，\n正在看刀剑神域（第一季）。");
+			break;
+		case 7:
+			introduce.SetWindowTextW(L"你知道吗?\n其实拷贝只需要几行代码\n就可以实现！");
+			break;
+		case 8:
+			introduce.SetWindowTextW(L"有几个运算只能输入\n奇数哦，就算输入\n偶数，也会自动变成奇数\n");
+			break;
+		case 9:
+			introduce.SetWindowTextW(L"本作原来有更多彩蛋，\n但是，太麻烦了，\n不做啦！！");
+			break;
+		case 10:
+			introduce.SetWindowTextW(L"NieR:Automata\nNieR:Replicant\nver.1.22474487139…");
+			break;
+		case 11:
+			introduce.SetWindowTextW(L"我保留了一部分BUG\n这样你才能知道\n用的是真人写的程序\nI am HumanLike");
+			break;
+		default:
+			introduce.SetWindowTextW(L"真有人能看到这个吗？");
+			num_inrtoduce = 0;
+			break;
+		}
+		UpdateData(0);
+	}
+}
+void CMFCApplication1Dlg::OnStnClickedStatic2()
+{
+	// TODO: 在此添加控件通知处理程序代码
+}
+//clear
+void CMFCApplication1Dlg::OnBnClickedButton10()
+{
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE18), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	UpdateData(1);
+	k = 1.2;
+	b = -20;
+	destroyAllWindows();
+
+	//tuition.SetWindowTextW(L"");
+	introduce.SetWindowTextW(L"  ");
+	num_inrtoduce = 0;
+	//显示src左侧窗口图像
+	if (!FilePath.empty())
+	{
+		srcImg = imread(FilePath);
+		srcImg.copyTo(dst);
+		CWnd* pWnd1 = GetDlgItem(IDC_PIC);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+		pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+		FilePath = CW2A(m_strFilePath);//CString转换为String
+		namedWindow(FilePath, WINDOW_AUTOSIZE);//设置窗口名
+		srcImg = imread(FilePath);//重置左侧图像
+		const char* p = FilePath.data();//String转换为Char*
+		HWND hWndl = (HWND)cvGetWindowHandle(p);//hWnd 表示窗口句柄,获取窗口句柄
+		HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+		::SetParent(hWndl, GetDlgItem(IDC_PIC)->m_hWnd);
+		::ShowWindow(hParent1, SW_HIDE);
+		resize(srcImg, srcImg, Size(rect.Width(), rect.Height()));
+		imshow(FilePath, srcImg);
+	}
+//抹掉PictureControl中的图像
+	HWND hwnd = ::GetForegroundWindow();
+	::SetWindowPos(hwnd, HWND_TOP, 1000, 1000, 0, 0, SWP_NOSIZE);//怎么说呢，destroy掉窗口但是picture control控件不清除
+	::SetWindowPos(hwnd, HWND_TOP, 56, 63, 0, 0, SWP_NOSIZE);//要怎么做呢？拖一下窗口就好了，这两步就是帮用户拖一下.....
+																										//还试过刷一张png透明图上去，但是结果黑色的，原理你可以看一下imshow（透明.png）
+																										//显示是黑色的，picture control 就是黑色的...难受！
+	UpdateData(0);
+
+}
+//music 已做成双向循环
+//void CMFCApplication1Dlg::OnBnClickedButton11()
+//{
+//	num_music++;
+//	PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+//		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+//	switch (num_music)
+//	{	
+//	case 1:
+//		PlaySound(MAKEINTRESOURCE(IDR_WAVE2), AfxGetResourceHandle(),
+//		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT | SND_LOOP);//循环播放
+//		break;
+//	case 2:
+//		PlaySound(MAKEINTRESOURCE(IDR_WAVE8), AfxGetResourceHandle(),
+//		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT | SND_LOOP);//循环播放
+//		break;
+//	case 3:
+//		PlaySound(MAKEINTRESOURCE(IDR_WAVE6), AfxGetResourceHandle(),
+//			SND_ASYNC | SND_RESOURCE | SND_NODEFAULT | SND_LOOP);//循环播放
+//		break;
+//	case 4:
+//		PlaySound(MAKEINTRESOURCE(IDR_WAVE9), AfxGetResourceHandle(),
+//			SND_ASYNC | SND_RESOURCE | SND_NODEFAULT | SND_LOOP);//循环播放
+//		break;
+//	case 5:
+//		PlaySound(MAKEINTRESOURCE(IDR_WAVE10), AfxGetResourceHandle(),
+//			SND_ASYNC | SND_RESOURCE | SND_NODEFAULT | SND_LOOP);//循环播放
+//		break;
+//	case 6:
+//		PlaySound(MAKEINTRESOURCE(IDR_WAVE11), AfxGetResourceHandle(),
+//			SND_ASYNC | SND_RESOURCE | SND_NODEFAULT | SND_LOOP);//循环播放
+//		break;
+//	case 7:
+//		PlaySound(MAKEINTRESOURCE(IDR_WAVE12), AfxGetResourceHandle(),
+//			SND_ASYNC | SND_RESOURCE | SND_NODEFAULT | SND_LOOP);//循环播放
+//		break;
+//	case 8:
+//		PlaySound(MAKEINTRESOURCE(IDR_WAVE13), AfxGetResourceHandle(),
+//			SND_ASYNC | SND_RESOURCE | SND_NODEFAULT | SND_LOOP);//循环播放
+//		break;
+//	case 9:
+//		PlaySound(MAKEINTRESOURCE(IDR_WAVE14), AfxGetResourceHandle(),
+//			SND_ASYNC | SND_RESOURCE | SND_NODEFAULT | SND_LOOP);//循环播放
+//		break;
+//	case 10:
+//		PlaySound(MAKEINTRESOURCE(IDR_WAVE15), AfxGetResourceHandle(),
+//			SND_ASYNC | SND_RESOURCE | SND_NODEFAULT | SND_LOOP);//循环播放
+//		break;
+//
+//		case music_max:
+//			num_music = 0;
+//		PlaySound(MAKEINTRESOURCE(IDR_WAVE16), AfxGetResourceHandle(),
+//			SND_ASYNC | SND_RESOURCE | SND_NODEFAULT | SND_LOOP);//循环播放
+//		break;
+//	default:
+//		break;
+//	}		
+//}
+//stop
+//void CMFCApplication1Dlg::OnBnClickedButton12()//想了好久双向循环，其实逻辑是一样的，先++/--，到了【阈值】就跳变，不过也不完全一样。
+//{//边试变想出来的，有运气成分
+//	PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+//		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+//	if (num_music == 0)//先点Stop，暂停住，再点music要继续放，最后一首歌特殊，这样反赋值回去就能实现。
+//	
+//		num_music = music_max-1;
+//	//当然还有别的问题,想想什么时候会是0，最后一首点Stop，第一首歌放了点stop/刚进程序没按music的时候
+//	//第一种情况处理好了，正好调到最后一首歌，逆向循环。
+//	// 运气好没有第三种第四种情况了，因为我是播放因为是从1开始选择的，0只是一个基数，先++再选择，而不是先选择再++，0不进选择里面。
+//	// 如果case 0：是num_music++，+播第一首歌，那还真不行了，（//其实可以的真的，666还挺简单的，怎么改？case：条件全-1，num_music放case里面，够了。
+//	// stop里面都不用动）
+//	//再者如果点多了变成负数了咋办？正好if(num_music==0)...=4;不可能到负数了,,,	（//当然解决方案也有另外的：default里面赋值num_music=1+播第一首歌；）
+//
+//	else //点第二下要倒退，最后一首歌先进上面那个if再点就进下面这个else。
+//		//之前都要写个计数器，这次这样解决...if(特殊条件),{改成一般条件} else（一般条件）{}
+//	{
+//		num_music--;
+//	}
+//	PlaySound(MAKEINTRESOURCE(IDR_WAVE3), AfxGetResourceHandle(),
+//	SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次播放
+//}
+//n*n中值滤波
+void CMFCApplication1Dlg::OnBnClickedButton14()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!srcImg.empty())
+	{
+		if ((k == init_gaosi_ε && b == init_gaosi_σ) || (k == init_liner_k && b == init_liner_b)
+			|| (k == init_noliner_k && b == init_noliner_b) || (k == init_average_filter_k && b == init_average_filter_b) ||
+			(k == init_media_filter_k && b == init_media_liter_b) || (k == init_pepper_salt_k && b == init_pepper_salt_b)
+			|| (k == init_Canny_k && b == init_Canny_b) || (k == init_role_k && b == init_role_b)
+			|| (k == init_scale_k && b == init_scale_b) || (k == init_gaosi_k && b == init_gaosi_b))
+		{
+			k = init_average_filter_k;
+			b = init_average_filter_b;
+		}
+		if (k != init_average_filter_k)//把这句话放下面，而不是上面，秀！
+		{
+			mod.SetWindowTextW(L"手动模式");
+		}
+		if (k < 1)
+		{
+			k = init_average_filter_k;
+			b = init_average_filter_b;
+		}
+		else
+			mod.SetWindowTextW(L"自动模式");
+		output = "output";
+		namedWindow(output);
+		destroyWindow(output);
+		
+		blur(srcImg,dst, Size(k, k), Point(-1, -1));//这是写操作地方，别的都可以照搬了
+
+		CWnd* pWnd1 = GetDlgItem(IDC_PIC2);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+		pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+		namedWindow(output, WINDOW_AUTOSIZE);//设置窗口名
+		HWND hWndl = (HWND)cvGetWindowHandle("output");//hWnd 表示窗口句柄,获取窗口句柄
+		HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+		::SetParent(hWndl, GetDlgItem(IDC_PIC2)->m_hWnd);
+		::ShowWindow(hParent1, SW_HIDE);
+		resize(dst, dst, Size(rect.Width(), rect.Height()));
+
+		imshow(output, dst);
+
+	}
+	UpdateData(0);
+}
+//加椒盐噪声
+void CMFCApplication1Dlg::OnBnClickedButton15()
+{
+	UpdateData(1);	
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE18), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!srcImg.empty())
+	{				
+		if ((k == init_gaosi_ε && b == init_gaosi_σ) || (k == init_liner_k && b == init_liner_b)
+			|| (k == init_noliner_k && b == init_noliner_b) || (k == init_average_filter_k && b == init_average_filter_b) ||
+			(k == init_media_filter_k && b == init_media_liter_b) || (k == init_pepper_salt_k && b == init_pepper_salt_b)
+			|| (k == init_Canny_k && b == init_Canny_b)||(k==init_role_k&&b==init_role_b)
+			||(k==init_scale_k&&b==init_scale_b)||(k==init_gaosi_k&&b==init_gaosi_b))
+		{
+			k = init_pepper_salt_k;
+			b = init_pepper_salt_b;
+		}
+		if (k != init_pepper_salt_k)//把这句话放下面，而不是上面，秀！
+		{
+			mod.SetWindowTextW(L"手动模式");
+		}
+		else
+			mod.SetWindowTextW(L"自动模式");
+		if (srcImg.type() == CV_8UC3)
+		{
+			destroyWindow(FilePath);
+
+
+		/*	srcImg = imread(FilePath);*///重新读取原图，防止多次加噪声。
+
+			//加噪声
+			srand((unsigned)time(NULL)); //使用当前时间值作为随机数发生器的种子值
+			for (int x = 0; x < k; x++)//将图像中n个像素随机置为白盐噪声点
+			{
+				int i = rand() % srcImg.cols;
+				int j = rand() % srcImg.rows;
+				srcImg.at<Vec3b>(j, i)[0] = 250;
+				srcImg.at<Vec3b>(j, i)[1] = 250;
+				srcImg.at<Vec3b>(j, i)[2] = 250;
+			}
+			for (int x = 0; x < k; x++)//将图像中n个像素随机置为黑椒噪声点
+			{
+				int i = rand() % srcImg.cols;
+				int j = rand() % srcImg.rows;
+				srcImg.at<Vec3b>(j, i)[0] = 0;
+				srcImg.at<Vec3b>(j, i)[1] = 0;
+				srcImg.at<Vec3b>(j, i)[2] = 0;
+			}
+			//显示
+			CWnd* pWnd1 = GetDlgItem(IDC_PIC);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+			pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+			FilePath = CW2A(m_strFilePath);//CString转换为String
+			namedWindow(FilePath, WINDOW_AUTOSIZE);//设置窗口名
+			const char* p = FilePath.data();//String转换为Char*
+			HWND hWndl = (HWND)cvGetWindowHandle(p);//hWnd 表示窗口句柄,获取窗口句柄
+			HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+			::SetParent(hWndl, GetDlgItem(IDC_PIC)->m_hWnd);
+			::ShowWindow(hParent1, SW_HIDE);
+			resize(srcImg, srcImg, Size(rect.Width(), rect.Height()));
+			imshow(FilePath, srcImg);
+		}
+		else if (srcImg.type() == CV_8UC1)//如果已经是灰度图像了,照着灰度图像加噪声(但感觉好麻烦，有点重复)
+		{
+			destroyWindow(FilePath);
+
+
+			/*srcImg = imread(FilePath, IMREAD_GRAYSCALE)*/;//重新读取原图，防止多次加噪声。
+
+			//加噪声
+			srand((unsigned)time(NULL)); //使用当前时间值作为随机数发生器的种子值
+			for (int x = 0; x < k; x++)//将图像中n个像素随机置为白盐噪声点
+			{
+				int i = rand() % srcImg.cols;
+				int j = rand() % srcImg.rows;
+				srcImg.at<uchar>(j, i) = 250;//重要，对只有一个通道的灰度图像进行操作
+				//srcImg.at<Vec3b>(j, i)[1] = 250;
+				//srcImg.at<Vec3b>(j, i)[2] = 250;
+			}
+			for (int x = 0; x < k; x++)//将图像中n个像素随机置为黑椒噪声点
+			{
+				int i = rand() % srcImg.cols;
+				int j = rand() % srcImg.rows;
+				srcImg.at<uchar>(j, i) = 0;
+				//srcImg.at<Vec3b>(j, i)[1] = 0;
+				//srcImg.at<Vec3b>(j, i)[2] = 0;
+			}
+			//显示
+			CWnd* pWnd1 = GetDlgItem(IDC_PIC);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+			pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+			FilePath = CW2A(m_strFilePath);//CString转换为String
+			namedWindow(FilePath, WINDOW_AUTOSIZE);//设置窗口名
+			const char* p = FilePath.data();//String转换为Char*
+			HWND hWndl = (HWND)cvGetWindowHandle(p);//hWnd 表示窗口句柄,获取窗口句柄
+			HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+			::SetParent(hWndl, GetDlgItem(IDC_PIC)->m_hWnd);
+			::ShowWindow(hParent1, SW_HIDE);
+			resize(srcImg, srcImg, Size(rect.Width(), rect.Height()));
+			imshow(FilePath, srcImg);
+		}	
+	}
+	UpdateData(0);
+}
+//加高斯噪声
+void CMFCApplication1Dlg::OnBnClickedButton16()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE18), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!srcImg.empty())
+	{				
+		if ((k == init_gaosi_ε && b == init_gaosi_σ) || (k == init_liner_k && b == init_liner_b)
+			|| (k == init_noliner_k && b == init_noliner_b) || (k == init_average_filter_k && b == init_average_filter_b) ||
+			(k == init_media_filter_k && b == init_media_liter_b) || (k == init_pepper_salt_k && b == init_pepper_salt_b)
+			|| (k == init_Canny_k && b == init_Canny_b) || (k == init_role_k && b == init_role_b)
+			|| (k == init_scale_k && b == init_scale_b) || (k == init_gaosi_k && b == init_gaosi_b))
+		{
+			k = init_gaosi_ε;
+			b = init_gaosi_σ;
+		}
+		if (k !=init_gaosi_ε||b!=init_gaosi_σ)//把这句话放下面，而不是上面，秀！
+		{
+			mod.SetWindowTextW(L"手动模式");
+		}
+		else
+			mod.SetWindowTextW(L"自动模式");
+		destroyWindow(FilePath);
+		//destroyAllWindows();//清除所有图像
+		//HWND hwnd = ::GetForegroundWindow();
+		//::SetWindowPos(hwnd, HWND_TOP, 1000, 1000, 0, 0, SWP_NOSIZE);
+		//::SetWindowPos(hwnd, HWND_TOP, 56, 63, 0, 0, SWP_NOSIZE);
+		//if (srcImg.type() == CV_8UC3)
+		//srcImg = imread(FilePath);//重新读取原图，防止多次加噪声。
+		//else if(srcImg.type() == CV_8UC1)
+		//	srcImg= imread(FilePath, IMREAD_GRAYSCALE);
+		//加噪声
+		//生成与原图像同尺寸、数据类型和通道数的矩阵
+		Mat img_noise = Mat::zeros(srcImg.rows, srcImg.cols, srcImg.type());
+		RNG rng;                                   //创建一个RNG类
+		rng.fill(img_noise, RNG::NORMAL, k, b);  //生成三通道的高斯分布随机数（10，20）表示均值和标准差
+		srcImg = srcImg + img_noise;                     //在彩色图像中添加高斯噪声	;
+		
+		//显示
+		CWnd* pWnd1 = GetDlgItem(IDC_PIC);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+		pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+		FilePath = CW2A(m_strFilePath);//CString转换为String
+		namedWindow(FilePath, WINDOW_AUTOSIZE);//设置窗口名
+		const char* p = FilePath.data();//String转换为Char*
+		HWND hWndl = (HWND)cvGetWindowHandle(p);//hWnd 表示窗口句柄,获取窗口句柄
+		HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+		::SetParent(hWndl, GetDlgItem(IDC_PIC)->m_hWnd);
+		::ShowWindow(hParent1, SW_HIDE);
+		resize(srcImg, srcImg, Size(rect.Width(), rect.Height()));
+		imshow(FilePath, srcImg);
+	}
+	UpdateData(0);
+	
+}
+//中值滤波
+void CMFCApplication1Dlg::OnBnClickedButton17()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!srcImg.empty())
+	{
+		if ((k == init_gaosi_ε && b == init_gaosi_σ) || (k == init_liner_k && b == init_liner_b)
+			|| (k == init_noliner_k && b == init_noliner_b) || (k == init_average_filter_k && b == init_average_filter_b) ||
+			(k == init_media_filter_k && b == init_media_liter_b) || (k == init_pepper_salt_k && b == init_pepper_salt_b)
+			|| (k == init_Canny_k && b == init_Canny_b) || (k == init_role_k && b == init_role_b)
+			|| (k == init_scale_k && b == init_scale_b) || (k == init_gaosi_k && b == init_gaosi_b))
+		{
+			k = init_media_filter_k;
+			b = init_media_liter_b;
+		}
+		if (k != init_media_filter_k)//把这句话放下面，而不是上面，秀！
+		{
+			mod.SetWindowTextW(L"手动模式");
+		}
+		else
+			mod.SetWindowTextW(L"自动模式");
+		if (int(k)% 2 == 0)
+		{
+			k--;
+		}
+		if (k < 1)
+		{
+			k = init_media_filter_k;
+			b = init_media_liter_b;
+		}
+		output = "output";
+		namedWindow(output);
+		destroyWindow(output);
+
+		medianBlur(srcImg, dst, k);//这是写操作地方，别的都可以照搬了
+		
+		CWnd* pWnd1 = GetDlgItem(IDC_PIC2);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+		pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+		namedWindow(output, WINDOW_AUTOSIZE);//设置窗口名
+		HWND hWndl = (HWND)cvGetWindowHandle("output");//hWnd 表示窗口句柄,获取窗口句柄
+		HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+		::SetParent(hWndl, GetDlgItem(IDC_PIC2)->m_hWnd);
+		::ShowWindow(hParent1, SW_HIDE);
+		resize(dst, dst, Size(rect.Width(), rect.Height()));
+
+		imshow(output, dst);
+
+	}
+	UpdateData(0);
+}
+//Exchange
+void CMFCApplication1Dlg::OnBnClickedButton21()
+{
+UpdateData(1);
+PlaySound(MAKEINTRESOURCE(IDR_WAVE18), AfxGetResourceHandle(),
+	SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+if (!srcImg.empty()  && !dst.empty()/*&&srcImg.cols==dst.cols&&srcImg.rows==dst.rows*/)
+{	
+		namedWindow("output");
+		destroyWindow("output");
+		namedWindow(FilePath);
+		destroyWindow(FilePath);
+		//srcImg = dst;//这样不行，exchange完后使用变换，dst结果图会多次叠加，可是点一下均衡化就好了
+		//Mat copyImg;
+		dst.copyTo(srcImg);//看了一下均衡化，秘密是这个！
+		//dst.copyTo(srcImg);
+		//copyImg.copyTo(dst);
+		CWnd* pWnd1 = GetDlgItem(IDC_PIC);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+		pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+		FilePath = CW2A(m_strFilePath);//CString转换为String
+		namedWindow(FilePath, WINDOW_AUTOSIZE);//设置窗口名
+		const char* p = FilePath.data();//String转换为Char*
+		HWND hWndl = (HWND)cvGetWindowHandle(p);//hWnd 表示窗口句柄,获取窗口句柄
+		HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+		::SetParent(hWndl, GetDlgItem(IDC_PIC)->m_hWnd);
+		::ShowWindow(hParent1, SW_HIDE);
+		resize(srcImg, srcImg, Size(rect.Width(), rect.Height()));
+		imshow(FilePath, srcImg);
+/*		namedWindow(output, WINDOW_AUTOSIZE);*///设置窗口名
+	//const char* p = FilePath.data();//String转换为Char*
+		// hWndl = (HWND)cvGetWindowHandle("output");//hWnd 表示窗口句柄,获取窗口句柄
+		// hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+		//::SetParent(hWndl, GetDlgItem(IDC_PIC2)->m_hWnd);
+		//::ShowWindow(hParent1, SW_HIDE);
+		//resize(dst, dst, Size(rect.Width(), rect.Height()));
+		//imshow(output, dst);
+		//抹掉
+		HWND hwnd = ::GetForegroundWindow();
+		::SetWindowPos(hwnd, HWND_TOP, 1000, 1000, 0, 0, SWP_NOSIZE);//怎么说呢，destroy掉窗口但是picture control控件不清除
+		::SetWindowPos(hwnd, HWND_TOP, 56, 63, 0, 0, SWP_NOSIZE);
+	
+}UpdateData(0);
+}
+//一阶微分算子 Sobel边缘锐化
+void CMFCApplication1Dlg::OnBnClickedButton18()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!srcImg.empty())
+	{
+		output = "output";
+		namedWindow(output);
+		destroyWindow(output);
+		
+		Sobel(srcImg, gradx, CV_16S, 1, 0, 3, 1, 1, BORDER_DEFAULT);//运算过程，别的照搬
+		Sobel(srcImg, grady, CV_16S, 0, 1, 3, 1, 1, BORDER_DEFAULT);
+		convertScaleAbs(gradx, absgradx);
+		convertScaleAbs(grady, absgrady);
+		absgradxy = absgradx + absgrady;
+		dst = srcImg + absgradxy;
+
+		CWnd* pWnd1 = GetDlgItem(IDC_PIC2);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+		pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+		namedWindow(output, WINDOW_AUTOSIZE);//设置窗口名
+		HWND hWndl = (HWND)cvGetWindowHandle("output");//hWnd 表示窗口句柄,获取窗口句柄
+		HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+		::SetParent(hWndl, GetDlgItem(IDC_PIC2)->m_hWnd);
+		::ShowWindow(hParent1, SW_HIDE);
+		resize(dst, dst, Size(rect.Width(), rect.Height()));
+
+
+		imshow(output, dst);
+	}
+	UpdateData(0);
+}
+//一阶微分Soble展示边缘图像
+void CMFCApplication1Dlg::OnBnClickedButton20()
+{
+UpdateData(1);
+PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+	SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+if (!absgradx.empty())
+{
+	if( num_sobel == 0)
+{
+	num_sobel++;
+	Sobel(srcImg, gradx, CV_16S, 1, 0, 3, 1, 1, BORDER_DEFAULT);//运算过程，别的照搬
+	Sobel(srcImg, grady, CV_16S, 0, 1, 3, 1, 1, BORDER_DEFAULT);
+	convertScaleAbs(gradx, absgradx);
+	convertScaleAbs(grady, absgrady);
+	absgradxy = absgradx + absgrady;
+	namedWindow("X方向一阶边缘检测XBorder", 0);
+	cvResizeWindow("X方向一阶边缘检测XBorder", 400, 400);
+	moveWindow("X方向一阶边缘检测XBorder", 0, 0);
+	/*HWND hwnd = (HWND)cvGetWindowHandle("变换前灰度图の直方图");*///*******用于置顶，但失败了...******
+	HWND hwnd = ::GetForegroundWindow();
+	::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);//6666加个：：就好了，不然打开的是afdx.h这个diao毛头文件
+	imshow("X方向一阶边缘检测XBorder", absgradx);
+	namedWindow("Y方向一阶边缘检测YBorder", 0);
+	cvResizeWindow("Y方向一阶边缘检测YBorder", 400, 400);
+	moveWindow("Y方向一阶边缘检测YBorder", 425, 0);
+	/*HWND hwnd = (HWND)cvGetWindowHandle("变换前灰度图の直方图");*///*******用于置顶，但失败了...******
+	hwnd = ::GetForegroundWindow();
+	::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);
+	imshow("Y方向一阶边缘检测YBorder", absgrady);
+	namedWindow("X和Y方向的一阶边缘检测XYBorder", 0);
+	cvResizeWindow("X和Y方向的一阶边缘检测XYBorder", 400, 400);
+	moveWindow("X和Y方向的一阶边缘检测XYBorder", 425, 450);
+	/*HWND hwnd = (HWND)cvGetWindowHandle("变换前灰度图の直方图");*///*******用于置顶，但失败了...******
+	hwnd = ::GetForegroundWindow();
+	::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);
+	imshow("X和Y方向的一阶边缘检测XYBorder", absgradxy);
+	UpdateData(0);
+}
+	else 
+	{
+		num_sobel--;
+		namedWindow("X方向一阶边缘检测XBorder");
+		namedWindow("Y方向一阶边缘检测YBorder");
+		namedWindow("X和Y方向的一阶边缘检测XYBorder");
+		destroyWindow("X方向一阶边缘检测XBorder");
+		destroyWindow("Y方向一阶边缘检测YBorder");
+		destroyWindow("X和Y方向的一阶边缘检测XYBorder");
+	}
+}
+
+UpdateData(0);
+}
+//二阶拉普拉斯边缘检测
+void CMFCApplication1Dlg::OnBnClickedButton19()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!srcImg.empty())
+	{
+
+		output = "output";
+		namedWindow(output);
+		destroyWindow(output);
+
+		Mat gaosi_src, gray_gaosi_src,color_laplance_gray_gaosi_src;
+		if (srcImg.type() == CV_8UC3)
+		{
+			GaussianBlur(srcImg, gaosi_src, Size(3, 3), 0, 0, 4);//高斯模糊 – 去噪声
+			cvtColor(gaosi_src, gray_gaosi_src, CV_BGR2GRAY);//转换为灰度图像
+			Laplacian(gray_gaosi_src, laplance_gray_gaosi_src, CV_16S, 3);//拉普拉斯 – 二阶导数计算
+			convertScaleAbs(laplance_gray_gaosi_src, laplance_gray_gaosi_src);//取绝对值
+			srcImg.copyTo(color_laplance_gray_gaosi_src, laplance_gray_gaosi_src);
+			dst = srcImg + color_laplance_gray_gaosi_src;
+
+
+			CWnd* pWnd1 = GetDlgItem(IDC_PIC2);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+			pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+			namedWindow(output, WINDOW_AUTOSIZE);//设置窗口名
+			HWND hWndl = (HWND)cvGetWindowHandle("output");//hWnd 表示窗口句柄,获取窗口句柄
+			HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+			::SetParent(hWndl, GetDlgItem(IDC_PIC2)->m_hWnd);
+			::ShowWindow(hParent1, SW_HIDE);
+			resize(dst, dst, Size(rect.Width(), rect.Height()));
+
+			imshow(output, dst);
+		}
+		else//处理灰度图像
+		{
+			GaussianBlur(srcImg, gaosi_src, Size(3, 3), 0, 0, 4);//高斯模糊 – 去噪声
+			Laplacian(srcImg, laplance_gray_gaosi_src, CV_16S, 3);//拉普拉斯 – 二阶导数计算
+			convertScaleAbs(laplance_gray_gaosi_src, laplance_gray_gaosi_src);//取绝对值
+			srcImg.copyTo(color_laplance_gray_gaosi_src, laplance_gray_gaosi_src);
+			dst = srcImg + color_laplance_gray_gaosi_src;
+
+
+			CWnd* pWnd1 = GetDlgItem(IDC_PIC2);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+			pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+			namedWindow(output, WINDOW_AUTOSIZE);//设置窗口名
+			HWND hWndl = (HWND)cvGetWindowHandle("output");//hWnd 表示窗口句柄,获取窗口句柄
+			HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+			::SetParent(hWndl, GetDlgItem(IDC_PIC2)->m_hWnd);
+			::ShowWindow(hParent1, SW_HIDE);
+			resize(dst, dst, Size(rect.Width(), rect.Height()));
+
+			imshow(output, dst);
+		}
+		
+	}
+	UpdateData(0);
+}
+//二阶拉普拉斯算子边缘展示
+void CMFCApplication1Dlg::OnBnClickedButton22()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!laplance_gray_gaosi_src.empty())
+	{
+		if (num_Laplace == 0)
+		{
+			num_Laplace++;
+			Mat gaosi_src, gray_gaosi_src, laplance_gray_gaosi_src, color_laplance_gray_gaosi_src;
+			if (srcImg.type() == CV_8UC3)
+			{
+				GaussianBlur(srcImg, gaosi_src, Size(3, 3), 0, 0, 4);//高斯模糊 – 去噪声
+				cvtColor(gaosi_src, gray_gaosi_src, CV_BGR2GRAY);//转换为灰度图像
+				Laplacian(gray_gaosi_src, laplance_gray_gaosi_src, CV_16S, 3);//拉普拉斯 – 二阶导数计算
+				convertScaleAbs(laplance_gray_gaosi_src, laplance_gray_gaosi_src);//取绝对值
+				srcImg.copyTo(color_laplance_gray_gaosi_src, laplance_gray_gaosi_src);
+
+				namedWindow("拉普拉斯算子边缘检测灰度图", 0);
+				cvResizeWindow("拉普拉斯算子边缘检测灰度图", 400, 400);
+				moveWindow("拉普拉斯算子边缘检测灰度图", 0, 0);
+				/*HWND hwnd = (HWND)cvGetWindowHandle("变换前灰度图の直方图");*///*******用于置顶，但失败了...******
+				HWND hwnd = ::GetForegroundWindow();
+				::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);
+				namedWindow("拉普拉斯算子边缘检测Mask原图", 0);
+				cvResizeWindow("拉普拉斯算子边缘检测Mask原图", 400, 400);
+				moveWindow("拉普拉斯算子边缘检测Mask原图", 425, 0);
+				/*HWND hwnd = (HWND)cvGetWindowHandle("变换前灰度图の直方图");*///*******用于置顶，但失败了...******
+				hwnd = ::GetForegroundWindow();
+				::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);
+				imshow("拉普拉斯算子边缘检测灰度图", laplance_gray_gaosi_src);
+				imshow("拉普拉斯算子边缘检测Mask原图", color_laplance_gray_gaosi_src);
+			}
+
+			else
+			{
+				GaussianBlur(srcImg, gaosi_src, Size(3, 3), 0, 0, 4);//高斯模糊 – 去噪声
+		
+				Laplacian(srcImg, laplance_gray_gaosi_src, CV_16S, 3);//拉普拉斯 – 二阶导数计算
+				convertScaleAbs(laplance_gray_gaosi_src, laplance_gray_gaosi_src);//取绝对值
+				srcImg.copyTo(color_laplance_gray_gaosi_src, laplance_gray_gaosi_src);
+
+				namedWindow("拉普拉斯算子边缘检测灰度图", 0);
+				cvResizeWindow("拉普拉斯算子边缘检测灰度图", 400, 400);
+				moveWindow("拉普拉斯算子边缘检测灰度图", 0, 0);
+				/*HWND hwnd = (HWND)cvGetWindowHandle("变换前灰度图の直方图");*///*******用于置顶，但失败了...******
+				HWND hwnd = ::GetForegroundWindow();
+				::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);
+				namedWindow("拉普拉斯算子边缘检测Mask原图", 0);
+				cvResizeWindow("拉普拉斯算子边缘检测Mask原图", 400, 400);
+				moveWindow("拉普拉斯算子边缘检测Mask原图", 425, 0);
+				/*HWND hwnd = (HWND)cvGetWindowHandle("变换前灰度图の直方图");*///*******用于置顶，但失败了...******
+				hwnd = ::GetForegroundWindow();
+				::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);
+				imshow("拉普拉斯算子边缘检测灰度图", laplance_gray_gaosi_src);
+				imshow("拉普拉斯算子边缘检测Mask原图", color_laplance_gray_gaosi_src);
+			}
+		}
+		else
+		{
+			num_Laplace--;
+			namedWindow("拉普拉斯算子边缘检测灰度图");
+			destroyWindow("拉普拉斯算子边缘检测灰度图");
+			namedWindow("拉普拉斯算子边缘检测Mask原图");
+			destroyWindow("拉普拉斯算子边缘检测Mask原图");
+		}	
+	}UpdateData(0);
+}
+//Canny边缘锐化
+void CMFCApplication1Dlg::OnBnClickedButton23()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!srcImg.empty())
+	{
+		if ((k == init_gaosi_ε && b == init_gaosi_σ) || (k == init_liner_k && b == init_liner_b)
+			|| (k == init_noliner_k && b == init_noliner_b) || (k == init_average_filter_k && b == init_average_filter_b) ||
+			(k == init_media_filter_k && b == init_media_liter_b) || (k == init_pepper_salt_k && b == init_pepper_salt_b)
+			||(k==init_Canny_k&&b==init_Canny_b))
+		{
+			k = init_Canny_k;
+			b = init_Canny_b;
+		}
+		if (k != init_Canny_k||b!= init_Canny_b)//把这句话放下面，而不是上面，秀！
+		{
+			mod.SetWindowTextW(L"手动模式");
+		}
+		else
+			mod.SetWindowTextW(L"自动模式");
+		output = "output";
+		namedWindow(output);
+		destroyWindow(output);
+	
+		Canny(srcImg, Canny_edge, k ,b, 3);
+
+		coloredge.create(srcImg.size(), srcImg.type());//别的照搬
+		coloredge = Scalar::all(0);
+		srcImg.copyTo(coloredge, Canny_edge);//出彩色图的秘密！src.copyto（dst,mask!）
+		dst = srcImg + coloredge;
+
+
+		CWnd* pWnd1 = GetDlgItem(IDC_PIC2);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+		pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+		namedWindow(output, WINDOW_AUTOSIZE);//设置窗口名
+		HWND hWndl = (HWND)cvGetWindowHandle("output");//hWnd 表示窗口句柄,获取窗口句柄
+		HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+		::SetParent(hWndl, GetDlgItem(IDC_PIC2)->m_hWnd);
+		::ShowWindow(hParent1, SW_HIDE);
+		resize(dst, dst, Size(rect.Width(), rect.Height()));
+
+
+		imshow(output, dst);
+	}
+	UpdateData(0);
+}
+//Canny展示边缘
+void CMFCApplication1Dlg::OnBnClickedButton24()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!Canny_edge.empty())
+	{
+		if (num_Canny == 0)
+		{
+			num_Canny++;
+			namedWindow("Canny边缘检测", 0);
+			cvResizeWindow("Canny边缘检测", 400, 400);
+			moveWindow("Canny边缘检测", 0, 0);
+			/*HWND hwnd = (HWND)cvGetWindowHandle("变换前灰度图の直方图");*///*******用于置顶，但失败了...******
+			HWND hwnd = ::GetForegroundWindow();
+			namedWindow("Canny边缘检测Mask原图", 0);
+			cvResizeWindow("Canny边缘检测Mask原图", 400, 400);
+			moveWindow("Canny边缘检测Mask原图", 425, 0);
+			/*HWND hwnd = (HWND)cvGetWindowHandle("变换前灰度图の直方图");*///*******用于置顶，但失败了...******
+		 hwnd = ::GetForegroundWindow();
+			imshow("Canny边缘检测", Canny_edge);
+			imshow("Canny边缘检测Mask原图", coloredge);
+		}
+		else
+		{
+			num_Canny--;
+			namedWindow("Canny边缘检测");
+			namedWindow("Canny边缘检测Mask原图");
+			destroyWindow("Canny边缘检测");	
+			destroyWindow("Canny边缘检测Mask原图");
+		}
+	}
+	UpdateData(0);
+}
+//保存图像
+void CMFCApplication1Dlg::OnBnClickedButton13()
+{
+	if (!dst.empty())
+	{
+		PlaySound(MAKEINTRESOURCE(IDR_WAVE19), AfxGetResourceHandle(),
+			SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+		num_save++;	
+		imwrite("ImgSave/" +/* FilePath +*/ to_string(num_save)+".jpg", dst);
+	}
+}
+//旋转On/Off
+void CMFCApplication1Dlg::OnBnClickedButton29()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE18), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (num_role == 0)
+	{
+		//music;
+		//imshow();
+		if (!srcImg.empty())
+		{
+			namedWindow("旋转后的频域图");
+			destroyWindow("旋转后的频域图");
+			Mat padded, input;
+			if (srcImg.type() == CV_8UC3)
+			{
+				cvtColor(srcImg, input, CV_RGB2GRAY, 0);
+			}//imshow("step0_ori", input);
+			else
+				srcImg.copyTo(input);
+			int w = cv::getOptimalDFTSize(input.cols);
+			int h = cv::getOptimalDFTSize(input.rows);
+			copyMakeBorder(input, padded, 0, h - input.rows, 0, w - input.cols,
+				BORDER_CONSTANT, cv::Scalar::all(0));
+			padded.convertTo(padded, CV_32FC1);
+			for (int i = 0; i < padded.rows; i++)
+			{
+				float* ptr = padded.ptr<float>(i);
+				for (int j = 0; j < padded.cols; j++)
+					ptr[j] *= pow(-1, i + j);
+			}
+			Mat plane[] = { padded,cv::Mat::zeros(padded.size(),CV_32F) };
+			Mat complexImg;
+			merge(plane, 2, complexImg);
+			dft(complexImg, complexImg);
+			split(complexImg, plane);
+			magnitude(plane[0], plane[1], plane[0]);
+			plane[0] += cv::Scalar::all(1);
+			log(plane[0], plane[0]);
+			normalize(plane[0], plane[0], 1, 0, cv::NORM_MINMAX);
+			namedWindow("旋转后的频域图", 0);
+			HWND hwnd = ::GetForegroundWindow();
+			::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);
+			cvResizeWindow("旋转后的频域图", 500, 500);
+			moveWindow("旋转后的频域图", 1400, 0);
+			imshow("旋转后的频域图", plane[0]);
+
+		}
+		num_role = 1;
+		
+	}
+	else
+	{//music;
+		num_role = 0;
+
+	}UpdateData(0);
+	
+}//旋转
+//旋转+频域
+void CMFCApplication1Dlg::OnBnClickedButton28()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!srcImg.empty())
+	{
+		if ((k == init_gaosi_ε && b == init_gaosi_σ) || (k == init_liner_k && b == init_liner_b)
+			|| (k == init_noliner_k && b == init_noliner_b) || (k == init_average_filter_k && b == init_average_filter_b) ||
+			(k == init_media_filter_k && b == init_media_liter_b) || (k == init_pepper_salt_k && b == init_pepper_salt_b)
+			|| (k == init_Canny_k && b == init_Canny_b) || (k == init_role_k && b == init_role_b)
+			|| (k == init_scale_k && b == init_scale_b) || (k == init_gaosi_k && b == init_gaosi_b))
+		{
+			k = init_role_k;
+			b = init_role_b;
+		}
+
+		double angle = k;//角度
+		Mat destImage;		
+		Rotate(srcImg, destImage, angle);	//旋转
+		destImage.copyTo(srcImg);
+
+		//左侧展示图像。
+		namedWindow(FilePath);
+		destroyWindow(FilePath);
+		CWnd* pWnd1 = GetDlgItem(IDC_PIC);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+		pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+		namedWindow(FilePath, WINDOW_AUTOSIZE);//设置窗口名
+		const char* p = FilePath.data();//String转换为Char*
+		HWND hWndl = (HWND)cvGetWindowHandle(p);//hWnd 表示窗口句柄,获取窗口句柄
+		HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+		::SetParent(hWndl, GetDlgItem(IDC_PIC)->m_hWnd);
+		::ShowWindow(hParent1, SW_HIDE);
+		//resize(srcImg, srcImg, Size(rect.Width(), rect.Height()));
+		imshow(FilePath, srcImg);
+
+
+		if (num_role == 1)
+		{
+			//频谱图
+			namedWindow("旋转后的频域图");
+			destroyWindow("旋转后的频域图");
+			Mat padded, input;
+			if (srcImg.type() == CV_8UC3)
+			{
+				cvtColor(srcImg, input, CV_RGB2GRAY, 0);
+			}//imshow("step0_ori", input);
+			else
+				srcImg.copyTo(input);
+			int w = cv::getOptimalDFTSize(input.cols);
+			int h = cv::getOptimalDFTSize(input.rows);
+			copyMakeBorder(input, padded, 0, h - input.rows, 0, w - input.cols,
+			BORDER_CONSTANT, cv::Scalar::all(0));
+			padded.convertTo(padded, CV_32FC1);
+			for (int i = 0; i < padded.rows; i++)
+			{
+				float* ptr = padded.ptr<float>(i);
+				for (int j = 0; j < padded.cols; j++)
+					ptr[j] *= pow(-1, i + j);
+			}
+			Mat plane[] = { padded,cv::Mat::zeros(padded.size(),CV_32F) };
+			Mat complexImg;
+			merge(plane, 2, complexImg);
+			dft(complexImg, complexImg);
+			split(complexImg, plane);
+			magnitude(plane[0], plane[1], plane[0]);
+			plane[0] += cv::Scalar::all(1);
+			log(plane[0], plane[0]);
+			normalize(plane[0], plane[0], 1, 0, cv::NORM_MINMAX);
+			namedWindow("旋转后的频域图",0);
+			HWND hwnd = ::GetForegroundWindow();
+			::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);
+			cvResizeWindow("旋转后的频域图", 500, 500);
+			moveWindow("旋转后的频域图", 1400, 0);
+			imshow("旋转后的频域图", plane[0]);
+		}
+	}
+	UpdateData(0);
+}
+//缩放On/Off
+void CMFCApplication1Dlg::OnBnClickedButton31()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE18), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (num_scale == 0)
+	{
+		//imshow();
+		if (!srcImg.empty())
+		{
+			namedWindow("缩放后的频域图");
+			destroyWindow("缩放后的频域图");
+			Mat padded, input;
+			if (srcImg.type() == CV_8UC3)
+			{
+				cvtColor(srcImg, input, CV_RGB2GRAY, 0);
+			}//imshow("step0_ori", input);
+			else
+				srcImg.copyTo(input);
+			int w = cv::getOptimalDFTSize(input.cols);
+			int h = cv::getOptimalDFTSize(input.rows);
+			copyMakeBorder(input, padded, 0, h - input.rows, 0, w - input.cols,
+				BORDER_CONSTANT, cv::Scalar::all(0));
+			padded.convertTo(padded, CV_32FC1);
+			for (int i = 0; i < padded.rows; i++)
+			{
+				float* ptr = padded.ptr<float>(i);
+				for (int j = 0; j < padded.cols; j++)
+					ptr[j] *= pow(-1, i + j);
+			}
+			Mat plane[] = { padded,cv::Mat::zeros(padded.size(),CV_32F) };
+			Mat complexImg;
+			merge(plane, 2, complexImg);
+			dft(complexImg, complexImg);
+			split(complexImg, plane);
+			magnitude(plane[0], plane[1], plane[0]);
+			plane[0] += cv::Scalar::all(1);
+			log(plane[0], plane[0]);
+			normalize(plane[0], plane[0], 1, 0, cv::NORM_MINMAX);
+			namedWindow("缩放后的频域图", 0);
+			HWND hwnd = ::GetForegroundWindow();
+			::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);
+			cvResizeWindow("缩放后的频域图", 500, 500);
+			moveWindow("缩放后的频域图", 1400, 525);
+			imshow("缩放后的频域图", plane[0]);
+		}
+
+		num_scale = 1;
+	}
+	else
+	{	//music;
+		num_scale = 0;
+	}
+	UpdateData(0);
+}
+//缩放
+void CMFCApplication1Dlg::OnBnClickedButton30()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!srcImg.empty()&&(srcImg.cols>2&&srcImg.rows>2||(k<1&&b<1))&&(srcImg.cols <4000&&srcImg.rows<4000
+		||k>1&&b>1))
+	{
+		if ((k == init_gaosi_ε && b == init_gaosi_σ) || (k == init_liner_k && b == init_liner_b)
+			|| (k == init_noliner_k && b == init_noliner_b) || (k == init_average_filter_k && b == init_average_filter_b) ||
+			(k == init_media_filter_k && b == init_media_liter_b) || (k == init_pepper_salt_k && b == init_pepper_salt_b)
+			|| (k == init_Canny_k && b == init_Canny_b) || (k == init_role_k && b == init_role_b)
+			|| (k == init_scale_k && b == init_scale_b) || (k == init_gaosi_k && b == init_gaosi_b))
+		{
+			k = init_scale_k;
+			b = init_scale_b;
+		}
+		if (b < 0)
+			b = 1;
+		namedWindow(FilePath);
+		destroyWindow(FilePath);
+
+		resize(srcImg, srcImg, Size(srcImg.cols / k, srcImg.rows / b), 0, 0, INTER_NEAREST);
+
+		//左侧展示图像。
+
+		if (k > 1 || b > 1)
+		{
+			HWND hwnd = ::GetForegroundWindow();
+			::SetWindowPos(hwnd, HWND_TOP, 1000, 1000, 0, 0, SWP_NOSIZE);//怎么说呢，destroy掉窗口但是picture control控件不清除
+			::SetWindowPos(hwnd, HWND_TOP, 56, 63, 0, 0, SWP_NOSIZE);
+		}CWnd* pWnd1 = GetDlgItem(IDC_PIC);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+		pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+		namedWindow(FilePath, WINDOW_AUTOSIZE);//设置窗口名
+		const char* p = FilePath.data();//String转换为Char*
+		HWND hWndl = (HWND)cvGetWindowHandle(p);//hWnd 表示窗口句柄,获取窗口句柄
+		HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+		::SetParent(hWndl, GetDlgItem(IDC_PIC)->m_hWnd);
+		::ShowWindow(hParent1, SW_HIDE);
+		//resize(srcImg, srcImg, Size(rect.Width(), rect.Height()));
+		imshow(FilePath, srcImg);
+		if (num_scale == 1)
+		{
+			//频谱图
+			namedWindow("缩放后的频域图");
+			destroyWindow("缩放后的频域图");
+			Mat padded, input;
+			if (srcImg.type() == CV_8UC3)
+			{
+				cvtColor(srcImg, input, CV_RGB2GRAY, 0);
+			}//imshow("step0_ori", input);
+			else
+				srcImg.copyTo(input);
+			int w = cv::getOptimalDFTSize(input.cols);
+			int h = cv::getOptimalDFTSize(input.rows);
+			copyMakeBorder(input, padded, 0, h - input.rows, 0, w - input.cols,
+				BORDER_CONSTANT, cv::Scalar::all(0));
+			padded.convertTo(padded, CV_32FC1);
+			for (int i = 0; i < padded.rows; i++)
+			{
+				float* ptr = padded.ptr<float>(i);
+				for (int j = 0; j < padded.cols; j++)
+					ptr[j] *= pow(-1, i + j);
+			}
+			Mat plane[] = { padded,cv::Mat::zeros(padded.size(),CV_32F) };
+			Mat complexImg;
+			merge(plane, 2, complexImg);
+			dft(complexImg, complexImg);
+			split(complexImg, plane);
+			magnitude(plane[0], plane[1], plane[0]);
+			plane[0] += cv::Scalar::all(1);
+			log(plane[0], plane[0]);
+			normalize(plane[0], plane[0], 1, 0, cv::NORM_MINMAX);
+			namedWindow("缩放后的频域图", 0);
+			HWND hwnd = ::GetForegroundWindow();
+			::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);
+			cvResizeWindow("缩放后的频域图", 500, 500);
+			moveWindow("缩放后的频域图", 1400, 525);
+			imshow("缩放后的频域图", plane[0]);
+		}
+	}
+	UpdateData(0);
+}
+
+//拷貝
+void CMFCApplication1Dlg::OnBnClickedButton32()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE18), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!srcImg.empty())
+	{
+		srcImg.copyTo(copySrcImg);
+		namedWindow("备份");
+		destroyWindow("备份");
+		namedWindow("备份",0);
+		cvResizeWindow("备份", 300, 300);
+		moveWindow("备份", 50, 700);
+		imshow("备份", copySrcImg);	
+	}
+	UpdateData(0);
+}
+//转至拷貝
+void CMFCApplication1Dlg::OnBnClickedButton33()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!copySrcImg.empty())
+	{
+		copySrcImg.copyTo(srcImg);
+		CWnd* pWnd1 = GetDlgItem(IDC_PIC);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+		pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+		FilePath = CW2A(m_strFilePath);//CString转换为String
+		namedWindow(FilePath, WINDOW_AUTOSIZE);//设置窗口名
+		const char* p = FilePath.data();//String转换为Char*
+		HWND hWndl = (HWND)cvGetWindowHandle(p);//hWnd 表示窗口句柄,获取窗口句柄
+		HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+		::SetParent(hWndl, GetDlgItem(IDC_PIC)->m_hWnd);
+		resize(srcImg, srcImg, Size(rect.Width(), rect.Height()));
+		imshow(FilePath, srcImg);
+	}
+	UpdateData(0);
+}
+//弹出左
+void CMFCApplication1Dlg::OnBnClickedButton25()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE18), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!srcImg.empty())
+	{
+		namedWindow("srcImg");
+		destroyWindow("srcImg");
+		namedWindow("srcImg");
+		moveWindow("srcImg", 0, 0);
+		imshow("srcImg", srcImg);
+	}
+	UpdateData(0);
+}
+//弹出右
+void CMFCApplication1Dlg::OnBnClickedButton26()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE18), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!dst.empty())
+	{
+		namedWindow("dst");
+		destroyWindow("dst");
+		namedWindow("dst");
+		moveWindow("dst", 900, 0);
+		imshow("dst", dst);
+	}
+	UpdateData(0);
+}
+//菜单按钮
+void CMFCApplication1Dlg::OnBnClickedButton34()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	num_special = 1 - num_special;
+	//if (num_special >init_max_press )
+	//{
+	//	//music
+	//	GetDlgItem(IDC_BUTTON8)->ShowWindow(SW_SHOW);// 不要点我（doge）
+	//	GetDlgItem(IDC_BUTTON9)->ShowWindow(SW_SHOW); //萌新食用指南
+	//	GetDlgItem(IDC_PID3)->ShowWindow(SW_SHOW);//表情包
+	//	mciSendString(_T("play press3.wav"), NULL, 0, NULL);
+	//}UpdateData(0);
+}
+//低通滤波
+void CMFCApplication1Dlg::OnBnClickedButton35()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!srcImg.empty())
+	{
+		Mat image_gray, image_output, image_transform;
+		if (srcImg.type() == CV_8UC3)
+		{
+			cvtColor(srcImg, image_gray, COLOR_BGR2GRAY); //转换为灰度图
+		}
+		else
+		srcImg.copyTo(image_gray);
+		namedWindow("低通滤波");
+		destroyWindow("低通滤波");
+		//1、傅里叶变换，image_output为可显示的频谱图，image_transform为傅里叶变换的复数结果
+		My_DFT(image_gray, image_output, image_transform);
+		//2、理想低通滤波
+		Mat planes[] = { Mat_<float>(image_output), Mat::zeros(image_output.size(),CV_32F) };
+		split(image_transform, planes);//分离通道，获取实部虚部
+		Mat image_transform_real = planes[0];
+		Mat image_transform_imag = planes[1];
+
+		int core_x = image_transform_real.rows / 2;//频谱图中心坐标
+		int core_y = image_transform_real.cols / 2;
+		int r = 80;  //滤波半径
+		for (int i = 0; i < image_transform_real.rows; i++)
+		{
+			for (int j = 0; j < image_transform_real.cols; j++)
+			{
+				//距离中心的距离大于设置半径r的点所在值设为0
+				if (((i - core_x) * (i - core_x) + (j - core_y) * (j - core_y)) > r * r)
+				{
+					image_transform_real.at<float>(i, j) = 0;
+					image_transform_imag.at<float>(i, j) = 0;
+				}
+			}
+		}
+		planes[0] = image_transform_real;
+		planes[1] = image_transform_imag;
+		Mat image_transform_ilpf;//定义理想低通滤波矩阵
+		merge(planes, 2, image_transform_ilpf);
+
+		//3、傅里叶逆变换
+		Mat iDft[] = { Mat_<float>(image_output), Mat::zeros(image_output.size(),CV_32F) };
+		idft(image_transform_ilpf, image_transform_ilpf);//傅立叶逆变换
+		split(image_transform_ilpf, iDft);//分离通道，主要获取0通道
+		magnitude(iDft[0], iDft[1], iDft[0]); //计算复数的幅值，保存在iDft[0]
+		normalize(iDft[0], iDft[0], 0, 1, NORM_MINMAX);//归一化处理
+		namedWindow("低通滤波", 1);
+		HWND hwnd = ::GetForegroundWindow();//*******用于置顶，但失败了...******66666 我太爱:::::::::::::::::::::楽！！
+		::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);
+		imshow("低通滤波", iDft[0]);//显示逆变换图像
+	}UpdateData(0);
+}
+//高通滤波
+void CMFCApplication1Dlg::OnBnClickedButton36()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!srcImg.empty())
+	{
+		Mat image_gray, image_output, image_transform;
+		if (srcImg.type() == CV_8UC3)
+		{
+			cvtColor(srcImg, image_gray, COLOR_BGR2GRAY); //转换为灰度图
+		}
+		else
+			srcImg.copyTo(image_gray);
+		namedWindow("高通滤波");
+		destroyWindow("高通滤波");
+		//1、傅里叶变换，image_output为可显示的频谱图，image_transform为傅里叶变换的复数结果
+		My_DFT(image_gray, image_output, image_transform);
+
+		//2、理想高通滤波
+		Mat planes[] = { Mat_<float>(image_output), Mat::zeros(image_output.size(),CV_32F) };
+		split(image_transform, planes);//分离通道，获取实部虚部
+		Mat image_transform_real = planes[0];
+		Mat image_transform_imag = planes[1];
+
+		int core_x = image_transform_real.rows / 2;//频谱图中心坐标
+		int core_y = image_transform_real.cols / 2;
+		int r = 20;  //滤波半径
+		for (int i = 0; i < image_transform_real.rows; i++)
+		{
+			for (int j = 0; j < image_transform_real.cols; j++)
+			{
+				//距离中心的距离大于设置半径r的点所在值设为0
+				if (((i - core_x) * (i - core_x) + (j - core_y) * (j - core_y)) < r * r)
+				{
+					image_transform_real.at<float>(i, j) = 0;
+					image_transform_imag.at<float>(i, j) = 0;
+				}
+			}
+		}
+		planes[0] = image_transform_real;
+		planes[1] = image_transform_imag;
+		Mat image_transform_ilpf;//定义理想高通滤波矩阵
+		merge(planes, 2, image_transform_ilpf);
+
+		//3、傅里叶逆变换
+		Mat iDft[] = { Mat_<float>(image_output), Mat::zeros(image_output.size(),CV_32F) };
+		idft(image_transform_ilpf, image_transform_ilpf);//傅立叶逆变换
+		split(image_transform_ilpf, iDft);//分离通道，主要获取0通道
+		magnitude(iDft[0], iDft[1], iDft[0]); //计算复数的幅值，保存在iDft[0]
+		normalize(iDft[0], iDft[0], 0, 1, NORM_MINMAX);//归一化处理
+		namedWindow("高通滤波", 1);
+		HWND hwnd = ::GetForegroundWindow();//*******用于置顶，但失败了...******66666 我太爱:::::::::::::::::::::楽！！
+		::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);
+		imshow("高通滤波", iDft[0]);//显示逆变换图像
+
+	}
+	UpdateData(0);	
+}
+//高斯滤波
+void CMFCApplication1Dlg::OnBnClickedButton37()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!srcImg.empty())
+	{
+		if ((k == init_gaosi_ε && b == init_gaosi_σ) || (k == init_liner_k && b == init_liner_b)
+			|| (k == init_noliner_k && b == init_noliner_b) || (k == init_average_filter_k && b == init_average_filter_b) ||
+			(k == init_media_filter_k && b == init_media_liter_b) || (k == init_pepper_salt_k && b == init_pepper_salt_b)
+			|| (k == init_Canny_k && b == init_Canny_b) || (k == init_role_k && b == init_role_b)
+			|| (k == init_scale_k && b == init_scale_b) || (k == init_gaosi_k && b == init_gaosi_b))
+		{
+			k = init_gaosi_k;
+			b = init_gaosi_b;
+		}
+		if (int(k) % 2 == 0)
+		{
+			k--;
+		}
+		if (k != init_gaosi_k || b != init_gaosi_b)//把这句话放下面，而不是上面，秀！
+		{
+			mod.SetWindowTextW(L"手动模式");
+		}
+		else
+			mod.SetWindowTextW(L"自动模式");
+		namedWindow("output");
+		destroyWindow("output");
+		GaussianBlur(srcImg, dst, Size(k, k), k, k);
+		CWnd* pWnd1 = GetDlgItem(IDC_PIC2);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+		pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+		namedWindow("output", WINDOW_AUTOSIZE);//设置窗口名
+		HWND hWndl = (HWND)cvGetWindowHandle("output");//hWnd 表示窗口句柄,获取窗口句柄
+		HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+		::SetParent(hWndl, GetDlgItem(IDC_PIC2)->m_hWnd);
+		::ShowWindow(hParent1, SW_HIDE);
+		resize(dst, dst, Size(rect.Width(), rect.Height()));
+		imshow("output", dst);
+	}
+	UpdateData(0);
+}
+//频域图/左侧
+void CMFCApplication1Dlg::OnBnClickedButton27()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE19), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!srcImg.empty())
+	{
+		namedWindow("频域图左");
+		destroyWindow("频域图左");
+		Mat padded, input;
+		if (srcImg.type() == CV_8UC3)
+		{
+			cvtColor(srcImg, input, CV_RGB2GRAY, 0);
+		}//imshow("step0_ori", input);
+		else
+			srcImg.copyTo(input);
+		int w = cv::getOptimalDFTSize(input.cols);
+		int h = cv::getOptimalDFTSize(input.rows);
+		copyMakeBorder(input, padded, 0, h - input.rows, 0, w - input.cols,
+			BORDER_CONSTANT, cv::Scalar::all(0));
+		padded.convertTo(padded, CV_32FC1);
+		for (int i = 0; i < padded.rows; i++)
+		{
+			float* ptr = padded.ptr<float>(i);
+			for (int j = 0; j < padded.cols; j++)
+				ptr[j] *= pow(-1, i + j);
+		}
+		Mat plane[] = { padded,cv::Mat::zeros(padded.size(),CV_32F) };
+		Mat complexImg;
+		merge(plane, 2, complexImg);
+		dft(complexImg, complexImg);
+		split(complexImg, plane);
+		magnitude(plane[0], plane[1], plane[0]);
+		plane[0] += cv::Scalar::all(1);
+		log(plane[0], plane[0]);
+		normalize(plane[0], plane[0], 1, 0, cv::NORM_MINMAX);
+		namedWindow("频域图左", 0);
+		HWND hwnd = ::GetForegroundWindow();
+		::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);
+		cvResizeWindow("频域图左", 500, 500);
+		moveWindow("频域图左", 0, 0);
+		imshow("频域图左", plane[0]);
+
+	}
+	UpdateData(0);
+}
+//频域图右侧
+void CMFCApplication1Dlg::OnBnClickedButton38()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE19), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!dst.empty())
+	{
+		namedWindow("频域图右");
+		destroyWindow("频域图右");
+		Mat padded, input2;
+		if (dst.type() == CV_8UC3)
+		{
+			cvtColor(srcImg, input2, CV_RGB2GRAY, 0);
+		}//imshow("step0_ori", input);
+		else
+			dst.copyTo(input2);
+		int w = cv::getOptimalDFTSize(input2.cols);
+		int h = cv::getOptimalDFTSize(input2.rows);
+		copyMakeBorder(input2, padded, 0, h - input2.rows, 0, w - input2.cols,
+			BORDER_CONSTANT, cv::Scalar::all(0));
+		padded.convertTo(padded, CV_32FC1);
+		for (int i = 0; i < padded.rows; i++)
+		{
+			float* ptr = padded.ptr<float>(i);
+			for (int j = 0; j < padded.cols; j++)
+				ptr[j] *= pow(-1, i + j);
+		}
+		Mat plane[] = { padded,cv::Mat::zeros(padded.size(),CV_32F) };
+		Mat complexImg;
+		merge(plane, 2, complexImg);
+		dft(complexImg, complexImg);
+		split(complexImg, plane);
+		magnitude(plane[0], plane[1], plane[0]);
+		plane[0] += cv::Scalar::all(1);
+		log(plane[0], plane[0]);
+		normalize(plane[0], plane[0], 1, 0, cv::NORM_MINMAX);
+		namedWindow("频域图右", 0);
+		HWND hwnd = ::GetForegroundWindow();
+		::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);
+		cvResizeWindow("频域图右", 500, 500);
+		moveWindow("频域图右", 0, 550);
+		imshow("频域图右", plane[0]);
+
+	}
+	UpdateData(0);
+}
+
+//Hough概率变换
+void CMFCApplication1Dlg::OnBnClickedButton39()
+{
+	UpdateData(1);
+	PlaySound(MAKEINTRESOURCE(IDR_WAVE17), AfxGetResourceHandle(),
+		SND_ASYNC | SND_RESOURCE | SND_NODEFAULT);//单次环播放
+	if (!srcImg.empty())
+	{
+		if ((k == init_gaosi_ε && b == init_gaosi_σ) || (k == init_liner_k && b == init_liner_b)
+			|| (k == init_noliner_k && b == init_noliner_b) || (k == init_average_filter_k && b == init_average_filter_b) ||
+			(k == init_media_filter_k && b == init_media_liter_b) || (k == init_pepper_salt_k && b == init_pepper_salt_b)
+			|| (k == init_Canny_k && b == init_Canny_b))
+		{
+			k = init_Canny_k;
+			b = init_Canny_b;
+		}
+		if (k != init_Canny_k || b != init_Canny_b)//把这句话放下面，而不是上面，秀！
+		{
+			mod.SetWindowTextW(L"手动模式");
+		}
+		else
+			mod.SetWindowTextW(L"自动模式");
+		output = "output";
+		namedWindow(output);
+		destroyWindow(output);
+		Mat canny_edge;
+		Canny(srcImg, canny_edge, k, b, 3);
+
+		cvtColor(canny_edge, dst, COLOR_GRAY2BGR);
+		//进行霍夫线变换
+		vector<Vec4i>lines;//定义一个矢量结构lines用于存放得到的线段矢量集合
+		HoughLinesP(canny_edge, lines, 1, CV_PI / 80, 50, 10);
+		//依次在图中绘制出每条线段
+		for (size_t i = 0; i < lines.size(); i++)
+		{
+			Vec4i l = lines[i];
+			line(dst, Point(l[0], l[1]), Point(l[2], l[3]), Scalar(186, 88, 255), 1, LINE_AA);
+		}
+
+
+		CWnd* pWnd1 = GetDlgItem(IDC_PIC2);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+		pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+		namedWindow(output, WINDOW_AUTOSIZE);//设置窗口名
+		HWND hWndl = (HWND)cvGetWindowHandle("output");//hWnd 表示窗口句柄,获取窗口句柄
+		HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+		::SetParent(hWndl, GetDlgItem(IDC_PIC2)->m_hWnd);
+		::ShowWindow(hParent1, SW_HIDE);
+		resize(dst, dst, Size(rect.Width(), rect.Height()));
+
+		imshow(output, dst);
+	}
+	UpdateData(0);
+}
+
+//曝光融合
+void CMFCApplication1Dlg::OnBnClickedButton41()
+{
+	UpdateData(TRUE);
+	mciSendString(_T("play press1.wav"), NULL, 0, NULL);
+	destroyAllWindows();
+	vector<Mat>fusion_imgs;
+	String fusion_FilePath;
+	CString fusion_CST_FilePath = _T("");
+	LPCTSTR szFilter = _T("所有文件，但不要打开奇奇怪怪的文件啊喂！(*.*)|*.*|png图像(*.png)|*.png|jpg图像(*.jpg)|*.jpg|bmp图像(*.bmp)|*.bmp|jpg图像(*.jpg)|*.jpg|jpeg图像(*.jpeg)|*.jpeg|jfif图像(*.jfif)|*.jfif||");
+	CFileDialog dlgFileOpenImg(TRUE, NULL, NULL, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT, szFilter, NULL);
+	int num = 0;
+	while (num < 4)
+	{
+		if (dlgFileOpenImg.DoModal() == IDOK)
+		{
+
+			fusion_CST_FilePath = dlgFileOpenImg.GetPathName();
+		}
+		else
+		{
+			return;
+		}
+
+		fusion_FilePath = CW2A(fusion_CST_FilePath);//CString转换为String
+		namedWindow(fusion_FilePath, WINDOW_AUTOSIZE);//设置窗口名
+		const char* p = fusion_FilePath.data();//String转换为Char*
+
+		Mat Img = imread(fusion_FilePath);
+		HWND hwnd = ::GetForegroundWindow();
+		::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);
+		
+		moveWindow(fusion_FilePath, 0+100*num, 0 );
+		imshow(fusion_FilePath, Img);
+
+		fusion_imgs.push_back(Img);
+		mciSendString(_T("play press2.wav"), NULL, 0, NULL);
+		num++;
+	}
+
+	Ptr<AlignMTB> alignMTB = createAlignMTB();
+	alignMTB->process(fusion_imgs, fusion_imgs);
+	Mat exposureFusion;
+	Ptr<MergeMertens> mergeMertens = createMergeMertens();
+	mergeMertens->process(fusion_imgs, exposureFusion);
+
+	exposureFusion.copyTo(dst);
+
+	CWnd* pWnd1 = GetDlgItem(IDC_PIC2);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+	pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+	namedWindow(output, WINDOW_AUTOSIZE);//设置窗口名
+	HWND hWndl = (HWND)cvGetWindowHandle("output");//hWnd 表示窗口句柄,获取窗口句柄
+	HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+	::SetParent(hWndl, GetDlgItem(IDC_PIC2)->m_hWnd);
+	::ShowWindow(hParent1, SW_HIDE);
+	resize(dst, dst, Size(rect.Width(), rect.Height()));
+	imshow(output, dst);
+	
+	mciSendString(_T("play press3.wav"), NULL, 0, NULL);
+	UpdateData(FALSE);
+
+}
+
+//找不同
+void CMFCApplication1Dlg::OnBnClickedButton42()
+{
+	UpdateData(TRUE);
+	mciSendString(_T("play press1.wav"), NULL, 0, NULL);
+	destroyAllWindows();
+	vector<Mat>Differ_imgs;
+	String Differ_FilePath;
+	CString Differ_CST_FilePath= _T("");
+	LPCTSTR szFilter = _T("所有文件，但不要打开奇奇怪怪的文件啊喂！(*.*)|*.*|png图像(*.png)|*.png|jpg图像(*.jpg)|*.jpg|bmp图像(*.bmp)|*.bmp|jpg图像(*.jpg)|*.jpg|jpeg图像(*.jpeg)|*.jpeg|jfif图像(*.jfif)|*.jfif||");
+	CFileDialog dlgFileOpenImg(TRUE, NULL, NULL, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT, szFilter, NULL);
+	int num = 0;
+	while (num<2) 
+	{
+		if (dlgFileOpenImg.DoModal() == IDOK)
+		{
+
+			Differ_CST_FilePath = dlgFileOpenImg.GetPathName();
+		}
+		else
+		{
+			return;
+		}
+
+		Differ_FilePath = CW2A(Differ_CST_FilePath);//CString转换为String
+		namedWindow(Differ_FilePath, WINDOW_AUTOSIZE);//设置窗口名
+		const char* p = Differ_FilePath.data();//String转换为Char*
+
+		Mat Img = imread(Differ_FilePath);
+		HWND hwnd = ::GetForegroundWindow();
+		::SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOREPOSITION);
+		moveWindow(Differ_FilePath,0, 0+num*520);
+		imshow(Differ_FilePath, Img);
+
+		Differ_imgs.push_back(Img);
+		mciSendString(_T("play press2.wav"), NULL, 0, NULL);
+		num++;
+	}
+	Ptr<AlignMTB> alignMTB = createAlignMTB();
+	alignMTB->process(Differ_imgs, Differ_imgs);
+	Mat Differ_dst = Differ_imgs[1] - Differ_imgs[0];
+	Differ_dst.copyTo(dst);
+
+	CWnd* pWnd1 = GetDlgItem(IDC_PIC2);//CWnd是MFC窗口类的基类,提供了微软基础类库中所有窗口类的基本功能。
+	pWnd1->GetClientRect(&rect);//GetClientRect为获得控件相自身的坐标大小
+	namedWindow(output, WINDOW_AUTOSIZE);//设置窗口名
+	HWND hWndl = (HWND)cvGetWindowHandle("output");//hWnd 表示窗口句柄,获取窗口句柄
+	HWND hParent1 = ::GetParent(hWndl);//GetParent函数一个指定子窗口的父窗口句柄
+	::SetParent(hWndl, GetDlgItem(IDC_PIC2)->m_hWnd);
+	::ShowWindow(hParent1, SW_HIDE);
+	resize(dst, dst, Size(rect.Width(), rect.Height()));
+	imshow(output, dst);
+
+	mciSendString(_T("play press3.wav"), NULL, 0, NULL);
+	UpdateData(FALSE);
+}
